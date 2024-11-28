@@ -56,7 +56,7 @@ def launch_setup(context, *args, **kwargs):
     # moveit_configs.to_dict()
 
     simple_planner_node = Node(
-        package='hello_moveit',
+        package='simple_planner',
         executable='simple_planner',
         output='screen',
         parameters=[

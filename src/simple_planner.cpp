@@ -10,6 +10,9 @@
 #include <moveit/trajectory_processing/iterative_spline_parameterization.h>
 #include <moveit/trajectory_processing/time_optimal_trajectory_generation.h>
 
+// N.D. Marco Pastorio:
+// Simple planner implemented using MoveGroupInterface
+
 struct MovementConfig {
   double velocity_scaling_factor = 0.5;
   double acceleration_scaling_factor = 0.5;
