@@ -10,12 +10,6 @@
 #include <moveit/trajectory_processing/iterative_spline_parameterization.h>
 #include <moveit/trajectory_processing/time_optimal_trajectory_generation.h>
 
-// N.D. Marco Pastorio:
-
-// Tutorials from the MoveIt getting started to
-// https://moveit.picknik.ai/humble/doc/tutorials/planning_around_objects/planning_around_objects.html
-// Adapted for Ufactory Lite6 robots
-
 struct MovementConfig {
   double velocity_scaling_factor = 0.5;
   double acceleration_scaling_factor = 0.5;
