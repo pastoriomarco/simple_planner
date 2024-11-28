@@ -38,7 +38,20 @@ ament_target_dependencies(
   "moveit_core"
 )
 
-install(TARGETS simple_planner moveit_cpp_tutorial
+add_executable(moveit_cpp_simple_planner src/moveit_cpp_simple_planner.cpp)
+target_include_directories(moveit_cpp_simple_planner PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+target_compile_features(moveit_cpp_simple_planner PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
+ament_target_dependencies(
+  moveit_cpp_simple_planner
+  "moveit_ros_planning_interface"
+  "rclcpp"
+  "moveit_visual_tools"
+  "moveit_core"
+)
+
+install(TARGETS simple_planner moveit_cpp_tutorial moveit_cpp_simple_planner
   DESTINATION lib/${PROJECT_NAME})
 
   install(DIRECTORY

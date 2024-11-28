@@ -296,8 +296,7 @@ int main(int argc, char **argv)
 
     // Add object to planning scene
     { // Lock PlanningScene
-        planning_scene_monitor::LockedPlanningSceneRW scene(moveit_cpp_ptr->getPlanningSceneMonitor());
-        scene->processCollisionObjectMsg(collision_object);
+        planning_scene_monitor::LockedPlanningSceneRW(moveit_cpp_ptr->getPlanningSceneMonitor())->processCollisionObjectMsg(collision_object);
     } // Unlock PlanningScene
     planning_components->setStartStateToCurrentState();
     // Modified to previous target for lite6
@@ -325,10 +324,9 @@ int main(int argc, char **argv)
     visual_tools.deleteAllMarkers();
     visual_tools.trigger();
 
-
     // Plan #6
     // ^^^^^^^
-    // Added linear motion 
+    // Added linear motion
 
     planning_components->setStartStateToCurrentState();
 
@@ -354,13 +352,12 @@ int main(int argc, char **argv)
     const moveit::core::LinkModel *link_model = robot_model_ptr->getLinkModel(TCP_FRAME);
 
     // Define the validity callback
-    auto planning_scene = moveit_cpp_ptr->getPlanningSceneMonitor()->getPlanningScene();
     moveit::core::GroupStateValidityCallbackFn validity_callback =
-        [planning_scene](moveit::core::RobotState *state, const moveit::core::JointModelGroup *group, const double *joint_group_variable_values)
+        [moveit_cpp_ptr](moveit::core::RobotState *state, const moveit::core::JointModelGroup *group, const double *joint_group_variable_values)
     {
         state->setJointGroupPositions(group, joint_group_variable_values);
         state->update();
-        return !planning_scene->isStateColliding(*state, group->getName());
+        return !planning_scene_monitor::LockedPlanningSceneRO(moveit_cpp_ptr->getPlanningSceneMonitor())->isStateColliding(*state, group->getName());
     };
 
     // Compute the Cartesian path
