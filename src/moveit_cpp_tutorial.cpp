@@ -1,18 +1,25 @@
 #include <rclcpp/rclcpp.hpp>
 #include <memory>
-// MoveitCpp
+
+// MoveItCpp
 #include <moveit/moveit_cpp/moveit_cpp.h>
 #include <moveit/moveit_cpp/planning_component.h>
 
-#include <geometry_msgs/msg/point_stamped.h>
+// Cartesian Interpolator
+#include <moveit/robot_state/cartesian_interpolator.h>
 
+// Trajectory Processing
+#include <moveit/trajectory_processing/iterative_time_parameterization.h>
+
+// Planning Scene
+#include <moveit/planning_scene/planning_scene.h>
+
+#include <geometry_msgs/msg/point_stamped.h>
 #include <moveit_visual_tools/moveit_visual_tools.h>
 
 namespace rvt = rviz_visual_tools;
 
-// All source files that use ROS logging should define a file-specific
-// static const rclcpp::Logger named LOGGER, located at the top of the file
-// and inside the namespace with the narrowest scope (if there is one)
+// Logger
 static const rclcpp::Logger LOGGER = rclcpp::get_logger("moveit_cpp_tutorial");
 
 int main(int argc, char **argv)
@@ -21,27 +28,16 @@ int main(int argc, char **argv)
     rclcpp::NodeOptions node_options;
     RCLCPP_INFO(LOGGER, "Initialize node");
 
-    // This enables loading undeclared parameters
-    // best practice would be to declare parameters in the corresponding classes
-    // and provide descriptions about expected use
     node_options.automatically_declare_parameters_from_overrides(true);
     rclcpp::Node::SharedPtr node = rclcpp::Node::make_shared("run_moveit_cpp", "", node_options);
 
-    // We spin up a SingleThreadedExecutor for the current state monitor to get information
-    // about the robot's state.
     rclcpp::executors::SingleThreadedExecutor executor;
     executor.add_node(node);
     std::thread([&executor]()
                 { executor.spin(); })
         .detach();
 
-    // BEGIN_TUTORIAL
-    //
-    // Setup
-    // ^^^^^
-    //
     static const std::string PLANNING_GROUP = "lite6";
-    static const std::string LOGNAME = "moveit_cpp_tutorial";
     static const std::string BASE_FRAME = "link_base";
     static const std::string TCP_FRAME = "link_tcp";
 
@@ -59,10 +55,6 @@ int main(int argc, char **argv)
     auto joint_model_group_ptr = robot_model_ptr->getJointModelGroup(PLANNING_GROUP);
 
     // Visualization
-    // ^^^^^^^^^^^^^
-    //
-    // The package MoveItVisualTools provides many capabilities for visualizing objects, robots,
-    // and trajectories in RViz as well as debugging tools such as step-by-step introspection of a script
     moveit_visual_tools::MoveItVisualTools visual_tools(node, BASE_FRAME, "moveit_cpp_tutorial",
                                                         moveit_cpp_ptr->getPlanningSceneMonitor());
     visual_tools.deleteAllMarkers();
@@ -74,7 +66,6 @@ int main(int argc, char **argv)
     visual_tools.trigger();
 
     // Start the demo
-    // ^^^^^^^^^^^^^^^^^^^^^^^^^
     visual_tools.prompt("Press 'next' in the RvizVisualToolsGui window to start the demo");
 
     // Planning with MoveItCpp
@@ -309,7 +300,7 @@ int main(int argc, char **argv)
         scene->processCollisionObjectMsg(collision_object);
     } // Unlock PlanningScene
     planning_components->setStartStateToCurrentState();
-    //Modified to previous target for lite6
+    // Modified to previous target for lite6
     planning_components->setGoal(target_state);
 
     auto plan_solution5 = planning_components->plan();
@@ -331,6 +322,89 @@ int main(int argc, char **argv)
     //
     // END_TUTORIAL
     visual_tools.prompt("Press 'next' to end the demo");
+    visual_tools.deleteAllMarkers();
+    visual_tools.trigger();
+
+
+    // Plan #6
+    // ^^^^^^^
+    // Added linear motion 
+
+    planning_components->setStartStateToCurrentState();
+
+    // Get the current robot state
+    auto current_state = moveit_cpp_ptr->getCurrentState();
+
+    // Define the target pose (move along the Z-axis)
+    Eigen::Isometry3d target_linear = current_state->getGlobalLinkTransform(TCP_FRAME);
+    target_linear.translation().z() -= 0.1; // Move down 10 cm
+
+    // Parameters for Cartesian interpolation
+    double max_step_translation = 0.01; // Maximum step size in Cartesian space
+    double max_step_rotation = 0.0;     // No rotation
+    moveit::core::MaxEEFStep max_step(max_step_translation, max_step_rotation);
+
+    moveit::core::JumpThreshold jump_threshold;
+    jump_threshold.revolute = 0.0;
+    jump_threshold.prismatic = 0.0; // Disable jump detection
+
+    std::vector<moveit::core::RobotStatePtr> trajectory_states;
+
+    // Get the link model for the TCP frame
+    const moveit::core::LinkModel *link_model = robot_model_ptr->getLinkModel(TCP_FRAME);
+
+    // Define the validity callback
+    auto planning_scene = moveit_cpp_ptr->getPlanningSceneMonitor()->getPlanningScene();
+    moveit::core::GroupStateValidityCallbackFn validity_callback =
+        [planning_scene](moveit::core::RobotState *state, const moveit::core::JointModelGroup *group, const double *joint_group_variable_values)
+    {
+        state->setJointGroupPositions(group, joint_group_variable_values);
+        state->update();
+        return !planning_scene->isStateColliding(*state, group->getName());
+    };
+
+    // Compute the Cartesian path
+    double achieved_fraction = moveit::core::CartesianInterpolator::computeCartesianPath(
+        current_state.get(), joint_model_group_ptr, trajectory_states, link_model,
+        target_linear, true /* global_reference_frame */, max_step, jump_threshold,
+        validity_callback);
+
+    if (achieved_fraction > 0.99)
+    {
+        // Create a RobotTrajectory as a shared pointer
+        auto trajectory = std::make_shared<robot_trajectory::RobotTrajectory>(robot_model_ptr, PLANNING_GROUP);
+
+        // Add the waypoints to the trajectory
+        for (size_t i = 0; i < trajectory_states.size(); ++i)
+        {
+            trajectory->addSuffixWayPoint(trajectory_states[i], 0.0); // Time is 0.0, will be updated
+        }
+
+        // Time parameterization
+        trajectory_processing::IterativeParabolicTimeParameterization time_param;
+        bool time_param_success = time_param.computeTimeStamps(*trajectory);
+        if (!time_param_success)
+        {
+            RCLCPP_ERROR(LOGGER, "Failed to compute time stamps for the trajectory");
+        }
+
+        // Visualize the trajectory
+        visual_tools.publishTrajectoryLine(*trajectory, joint_model_group_ptr);
+        visual_tools.trigger();
+
+        // Execute the trajectory using MoveItCpp
+        bool execution_success = moveit_cpp_ptr->execute(PLANNING_GROUP, trajectory);
+        if (!execution_success)
+        {
+            RCLCPP_ERROR(LOGGER, "Failed to execute the trajectory");
+        }
+    }
+    else
+    {
+        RCLCPP_ERROR(LOGGER, "Failed to compute Cartesian path");
+    }
+
+    visual_tools.prompt("Press 'next' in the RvizVisualToolsGui window to end the demo");
     visual_tools.deleteAllMarkers();
     visual_tools.trigger();
 
