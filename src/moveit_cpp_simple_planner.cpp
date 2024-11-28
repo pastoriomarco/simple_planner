@@ -438,8 +438,11 @@ int main(int argc, char** argv)
 {
     // Initialize ROS and create the Node
     rclcpp::init(argc, argv);
-    auto node = rclcpp::Node::make_shared("simple_planner");
+    rclcpp::NodeOptions node_options;
+    RCLCPP_INFO(LOGGER, "Initialize node");
 
+    node_options.automatically_declare_parameters_from_overrides(true);
+    rclcpp::Node::SharedPtr node = rclcpp::Node::make_shared("run_moveit_cpp", "", node_options);
     // Create a ROS logger
     auto logger = node->get_logger();
 
