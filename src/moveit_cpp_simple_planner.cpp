@@ -13,9 +13,7 @@
 
 // Trajectory Processing
 #include <moveit/trajectory_processing/iterative_time_parameterization.h>
-#include <moveit/trajectory_processing/iterative_spline_parameterization.h>
 #include <moveit/trajectory_processing/time_optimal_trajectory_generation.h>
-#include <moveit/trajectory_processing/ruckig_traj_smoothing.h>
 
 // Planning Scene
 #include <moveit/planning_scene/planning_scene.h>
@@ -30,16 +28,16 @@
 namespace rvt = rviz_visual_tools;
 
 // Logger
-static const rclcpp::Logger LOGGER = rclcpp::get_logger("moveit_cpp_simple_planner");
+static const rclcpp::Logger logger = rclcpp::get_logger("moveit_cpp_simple_planner");
 
 struct MovementConfig
 {
     double velocity_scaling_factor = 0.5;
     double acceleration_scaling_factor = 0.5;
-    double step_size = 0.05;
+    double step_size = 0.01;
     double jump_threshold = 0.0;
     std::string smoothing_type = "iterative_parabolic";
-    int max_retries = 5;
+    int max_exec_retries = 5;
     int plan_number_target = 12;
     int plan_number_limit = 32;
 };
@@ -79,39 +77,25 @@ bool applyTimeParameterization(
     const rclcpp::Logger &logger)
 {
     bool time_param_success = false;
-    if (config.smoothing_type == "iterative_parabolic")
-    {
-        trajectory_processing::IterativeParabolicTimeParameterization time_param;
-        time_param_success = time_param.computeTimeStamps(*trajectory,
-                                                          config.velocity_scaling_factor,
-                                                          config.acceleration_scaling_factor);
-    }
-    else if (config.smoothing_type == "time_optimal")
+    if (config.smoothing_type == "time_optimal")
     {
         trajectory_processing::TimeOptimalTrajectoryGeneration time_param;
         time_param_success = time_param.computeTimeStamps(*trajectory,
                                                           config.velocity_scaling_factor,
                                                           config.acceleration_scaling_factor);
     }
-    else if (config.smoothing_type == "iterative_spline")
+    else // if (config.smoothing_type == "iterative_parabolic")
     {
-        trajectory_processing::IterativeSplineParameterization time_param;
+        trajectory_processing::IterativeParabolicTimeParameterization time_param;
         time_param_success = time_param.computeTimeStamps(*trajectory,
                                                           config.velocity_scaling_factor,
                                                           config.acceleration_scaling_factor);
     }
-    else if (config.smoothing_type == "ruckig")
-    {
-        time_param_success = trajectory_processing::RuckigSmoothing::applySmoothing(
-            *trajectory,
-            config.velocity_scaling_factor,
-            config.acceleration_scaling_factor);
-    }
-    else
-    {
-        RCLCPP_WARN(logger, "Unknown smoothing type '%s'. No time parameterization applied.", config.smoothing_type.c_str());
-        time_param_success = true; // Proceed without time parameterization
-    }
+    // else
+    // {
+    //     RCLCPP_WARN(logger, "Unknown smoothing type '%s'. No time parameterization applied.", config.smoothing_type.c_str());
+    //     time_param_success = true; // Proceed without time parameterization
+    // }
 
     if (!time_param_success)
     {
@@ -120,6 +104,34 @@ bool applyTimeParameterization(
     }
 
     return time_param_success;
+}
+
+// Function to perform trajectory execution
+bool executeTrajectory(
+    const moveit_cpp::MoveItCppPtr &moveit_cpp_ptr,
+    const robot_trajectory::RobotTrajectoryPtr &trajectory,
+    const std::string &planning_group,
+    const rclcpp::Logger &logger)
+{
+    bool execution_success = moveit_cpp_ptr->execute(planning_group, trajectory);
+    if (execution_success)
+    {
+        auto tem = moveit_cpp_ptr->getTrajectoryExecutionManager();
+        bool wait_success = tem->waitForExecution();
+
+        if (!wait_success || tem->getLastExecutionStatus() != moveit_controller_manager::ExecutionStatus::SUCCEEDED)
+        {
+            RCLCPP_WARN(logger, "Execution failed to complete successfully.");
+            execution_success = false;
+        }
+    }
+
+    if (!execution_success)
+    {
+        RCLCPP_ERROR(logger, "Execution failed after retries.");
+    }
+
+    return execution_success;
 }
 
 bool moveToPoseTarget(
@@ -131,81 +143,63 @@ bool moveToPoseTarget(
     const std::string &BASE_FRAME,
     const std::string &TCP_FRAME)
 {
-    // Set the start state to the current state
-    planning_components->setStartStateToCurrentState();
-
     // Create a PoseStamped with the target pose
     geometry_msgs::msg::PoseStamped pose_stamped;
     pose_stamped.pose = target_pose;
     pose_stamped.header.frame_id = BASE_FRAME;
 
-    // Specify the end-effector link name
-    planning_components->setGoal(pose_stamped, TCP_FRAME);
-
-    std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution, double>> trajectories;
-    int attempts = 0;
-
-    while (attempts < config.plan_number_limit &&
-           static_cast<int>(trajectories.size()) < config.plan_number_target)
-    {
-        auto plan_solution = planning_components->plan();
-
-        if (plan_solution.error_code.val == moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
-        {
-            double path_length = computePathLength(*plan_solution.trajectory);
-            trajectories.emplace_back(plan_solution, path_length);
-        }
-        else
-        {
-            RCLCPP_WARN(logger, "Pose target planning attempt %d failed.", attempts + 1);
-        }
-        attempts++;
-    }
-
-    if (trajectories.empty())
-    {
-        RCLCPP_ERROR(logger, "Failed to compute any valid pose target trajectory.");
-        return false;
-    }
-
-    RCLCPP_INFO(logger, "Computed %zu trajectories in %d attempts.", trajectories.size(), attempts);
-
-    // Select the shortest trajectory
-    auto shortest_trajectory_pair = std::min_element(
-        trajectories.begin(), trajectories.end(),
-        [](const auto &a, const auto &b)
-        { return a.second < b.second; });
-
-    // Apply time parameterization
-    if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
-    {
-        return false;
-    }
-
-    // Execute the trajectory using MoveItCpp
     int retry_count = 0;
     bool execution_success = false;
-    while (retry_count < config.max_retries && !execution_success)
+    while (retry_count < config.max_exec_retries && !execution_success)
     {
-        execution_success = moveit_cpp_ptr->execute(
-            planning_components->getPlanningGroupName(), shortest_trajectory_pair->first.trajectory);
-        if (execution_success)
-        {
-            // Wait for the execution to complete
-            auto tem = moveit_cpp_ptr->getTrajectoryExecutionManager();
-            bool wait_success = tem->waitForExecution();
+        // Specify the end-effector link name
+        planning_components->setGoal(pose_stamped, TCP_FRAME);
 
-            // Check if execution completed successfully
-            if (!wait_success || tem->getLastExecutionStatus() != moveit_controller_manager::ExecutionStatus::SUCCEEDED)
-            {
-                RCLCPP_WARN(logger, "Execution failed to complete successfully.");
-                execution_success = false;
-            }
-        }
-        else
+        std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution, double>> trajectories;
+        int attempts = 0;
+
+        while (attempts < config.plan_number_limit &&
+               static_cast<int>(trajectories.size()) < config.plan_number_target)
         {
-            RCLCPP_WARN(logger, "Execution failed, retrying...");
+            // Set the start state to the current state
+            planning_components->setStartStateToCurrentState();
+            auto plan_solution = planning_components->plan();
+
+            if (plan_solution.error_code.val == moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
+            {
+                double path_length = computePathLength(*plan_solution.trajectory);
+                trajectories.emplace_back(plan_solution, path_length);
+            }
+            else
+            {
+                RCLCPP_WARN(logger, "Pose target planning attempt %d failed.", attempts + 1);
+            }
+            attempts++;
         }
+
+        if (trajectories.empty())
+        {
+            RCLCPP_ERROR(logger, "Failed to compute any valid pose target trajectory.");
+            return false;
+        }
+
+        RCLCPP_INFO(logger, "Computed %zu trajectories in %d attempts.", trajectories.size(), attempts);
+
+        // Select the shortest trajectory
+        auto shortest_trajectory_pair = std::min_element(
+            trajectories.begin(), trajectories.end(),
+            [](const auto &a, const auto &b)
+            { return a.second < b.second; });
+
+        // Apply time parameterization
+        if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
+        {
+            return false;
+        }
+
+        // Execute the trajectory using MoveItCpp
+        execution_success = executeTrajectory(moveit_cpp_ptr, shortest_trajectory_pair->first.trajectory, planning_components->getPlanningGroupName(), logger);
+
         retry_count++;
     }
 
@@ -225,80 +219,62 @@ bool moveToJointTarget(
     const MovementConfig &config,
     const rclcpp::Logger &logger)
 {
-    // Set the start state to the current state
-    planning_components->setStartStateToCurrentState();
-
-    // Create a RobotState and set joint positions
-    moveit::core::RobotState goal_state(*moveit_cpp_ptr->getCurrentState());
-    goal_state.setJointGroupPositions(planning_components->getPlanningGroupName(), joint_values);
-    goal_state.update();
-
-    planning_components->setGoal(goal_state);
-
-    std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution, double>> trajectories;
-    int attempts = 0;
-
-    while (attempts < config.plan_number_limit &&
-           static_cast<int>(trajectories.size()) < config.plan_number_target)
-    {
-        auto plan_solution = planning_components->plan();
-
-        if (plan_solution.error_code.val == moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
-        {
-            double path_length = computePathLength(*plan_solution.trajectory);
-            trajectories.emplace_back(plan_solution, path_length);
-        }
-        else
-        {
-            RCLCPP_WARN(logger, "Joint target planning attempt %d failed.", attempts + 1);
-        }
-        attempts++;
-    }
-
-    if (trajectories.empty())
-    {
-        RCLCPP_ERROR(logger, "Failed to compute any valid joint target trajectory.");
-        return false;
-    }
-
-    RCLCPP_INFO(logger, "Computed %zu trajectories in %d attempts.", trajectories.size(), attempts);
-
-    // Select the shortest trajectory
-    auto shortest_trajectory_pair = std::min_element(
-        trajectories.begin(), trajectories.end(),
-        [](const auto &a, const auto &b)
-        { return a.second < b.second; });
-
-    // Apply time parameterization
-    if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
-    {
-        return false;
-    }
-
-    // Execute the trajectory using MoveItCpp
     int retry_count = 0;
     bool execution_success = false;
-    while (retry_count < config.max_retries && !execution_success)
+    while (retry_count < config.max_exec_retries && !execution_success)
     {
-        execution_success = moveit_cpp_ptr->execute(
-            planning_components->getPlanningGroupName(), shortest_trajectory_pair->first.trajectory);
-        if (execution_success)
-        {
-            // Wait for the execution to complete
-            auto tem = moveit_cpp_ptr->getTrajectoryExecutionManager();
-            bool wait_success = tem->waitForExecution();
+        // Create a RobotState and set joint positions
+        moveit::core::RobotState goal_state(*moveit_cpp_ptr->getCurrentState());
+        goal_state.setJointGroupPositions(planning_components->getPlanningGroupName(), joint_values);
+        goal_state.update();
 
-            // Check if execution completed successfully
-            if (!wait_success || tem->getLastExecutionStatus() != moveit_controller_manager::ExecutionStatus::SUCCEEDED)
-            {
-                RCLCPP_WARN(logger, "Execution failed to complete successfully.");
-                execution_success = false;
-            }
-        }
-        else
+        planning_components->setGoal(goal_state);
+
+        std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution, double>> trajectories;
+        int attempts = 0;
+
+        while (attempts < config.plan_number_limit &&
+               static_cast<int>(trajectories.size()) < config.plan_number_target)
         {
-            RCLCPP_WARN(logger, "Execution failed, retrying...");
+            // Set the start state to the current state
+            planning_components->setStartStateToCurrentState();
+            auto plan_solution = planning_components->plan();
+
+            if (plan_solution.error_code.val == moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
+            {
+                double path_length = computePathLength(*plan_solution.trajectory);
+                trajectories.emplace_back(plan_solution, path_length);
+            }
+            else
+            {
+                RCLCPP_WARN(logger, "Joint target planning attempt %d failed.", attempts + 1);
+            }
+            attempts++;
         }
+
+        if (trajectories.empty())
+        {
+            RCLCPP_ERROR(logger, "Failed to compute any valid joint target trajectory.");
+            return false;
+        }
+
+        RCLCPP_INFO(logger, "Computed %zu trajectories in %d attempts.", trajectories.size(), attempts);
+
+        // Select the shortest trajectory
+        auto shortest_trajectory_pair = std::min_element(
+            trajectories.begin(), trajectories.end(),
+            [](const auto &a, const auto &b)
+            { return a.second < b.second; });
+
+        // Apply time parameterization
+        if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
+        {
+            return false;
+        }
+
+        // Execute the trajectory using MoveItCpp
+        execution_success = executeTrajectory(moveit_cpp_ptr, shortest_trajectory_pair->first.trajectory, planning_components->getPlanningGroupName(), logger);
+
         retry_count++;
     }
 
@@ -318,75 +294,57 @@ bool moveToNamedTarget(
     const MovementConfig &config,
     const rclcpp::Logger &logger)
 {
-    // Set the start state to the current state
-    planning_components->setStartStateToCurrentState();
-
-    planning_components->setGoal(target_name);
-
-    std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution, double>> trajectories;
-    int attempts = 0;
-
-    while (attempts < config.plan_number_limit &&
-           static_cast<int>(trajectories.size()) < config.plan_number_target)
-    {
-        auto plan_solution = planning_components->plan();
-
-        if (plan_solution.error_code.val == moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
-        {
-            double path_length = computePathLength(*plan_solution.trajectory);
-            trajectories.emplace_back(plan_solution, path_length);
-        }
-        else
-        {
-            RCLCPP_WARN(logger, "Named target planning attempt %d failed.", attempts + 1);
-        }
-        attempts++;
-    }
-
-    if (trajectories.empty())
-    {
-        RCLCPP_ERROR(logger, "Failed to compute any valid named target trajectory.");
-        return false;
-    }
-
-    RCLCPP_INFO(logger, "Computed %zu trajectories in %d attempts.", trajectories.size(), attempts);
-
-    // Select the shortest trajectory
-    auto shortest_trajectory_pair = std::min_element(
-        trajectories.begin(), trajectories.end(),
-        [](const auto &a, const auto &b)
-        { return a.second < b.second; });
-
-    // Apply time parameterization
-    if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
-    {
-        return false;
-    }
-
-    // Execute the trajectory using MoveItCpp
     int retry_count = 0;
     bool execution_success = false;
-    while (retry_count < config.max_retries && !execution_success)
+    while (retry_count < config.max_exec_retries && !execution_success)
     {
-        execution_success = moveit_cpp_ptr->execute(
-            planning_components->getPlanningGroupName(), shortest_trajectory_pair->first.trajectory);
-        if (execution_success)
-        {
-            // Wait for the execution to complete
-            auto tem = moveit_cpp_ptr->getTrajectoryExecutionManager();
-            bool wait_success = tem->waitForExecution();
+        planning_components->setGoal(target_name);
 
-            // Check if execution completed successfully
-            if (!wait_success || tem->getLastExecutionStatus() != moveit_controller_manager::ExecutionStatus::SUCCEEDED)
-            {
-                RCLCPP_WARN(logger, "Execution failed to complete successfully.");
-                execution_success = false;
-            }
-        }
-        else
+        std::vector<std::pair<moveit_cpp::PlanningComponent::PlanSolution, double>> trajectories;
+        int attempts = 0;
+
+        while (attempts < config.plan_number_limit &&
+               static_cast<int>(trajectories.size()) < config.plan_number_target)
         {
-            RCLCPP_WARN(logger, "Execution failed, retrying...");
+            // Set the start state to the current state
+            planning_components->setStartStateToCurrentState();
+            auto plan_solution = planning_components->plan();
+
+            if (plan_solution.error_code.val == moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
+            {
+                double path_length = computePathLength(*plan_solution.trajectory);
+                trajectories.emplace_back(plan_solution, path_length);
+            }
+            else
+            {
+                RCLCPP_WARN(logger, "Named target planning attempt %d failed.", attempts + 1);
+            }
+            attempts++;
         }
+
+        if (trajectories.empty())
+        {
+            RCLCPP_ERROR(logger, "Failed to compute any valid named target trajectory.");
+            return false;
+        }
+
+        RCLCPP_INFO(logger, "Computed %zu trajectories in %d attempts.", trajectories.size(), attempts);
+
+        // Select the shortest trajectory
+        auto shortest_trajectory_pair = std::min_element(
+            trajectories.begin(), trajectories.end(),
+            [](const auto &a, const auto &b)
+            { return a.second < b.second; });
+
+        // Apply time parameterization
+        if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
+        {
+            return false;
+        }
+
+        // Execute the trajectory using MoveItCpp
+        execution_success = executeTrajectory(moveit_cpp_ptr, shortest_trajectory_pair->first.trajectory, planning_components->getPlanningGroupName(), logger);
+
         retry_count++;
     }
 
@@ -408,117 +366,100 @@ bool moveCartesianPath(
     const std::string &TCP_FRAME,
     const double linear_success_tolerance = 0.99)
 {
-    // Get the robot model and joint model group
-    auto robot_model_ptr = moveit_cpp_ptr->getRobotModel();
-    auto joint_model_group_ptr = robot_model_ptr->getJointModelGroup(planning_components->getPlanningGroupName());
-
-    // Specify the end-effector link name
-    const moveit::core::LinkModel *link_model = robot_model_ptr->getLinkModel(TCP_FRAME);
-
-    std::vector<std::pair<robot_trajectory::RobotTrajectoryPtr, double>> trajectories;
-    int attempts = 0;
-
-    while (attempts < config.plan_number_limit &&
-           static_cast<int>(trajectories.size()) < config.plan_number_target)
-    {
-        // Update current state before each attempt
-        auto current_state = moveit_cpp_ptr->getCurrentState();
-        planning_components->setStartStateToCurrentState();
-
-        std::vector<moveit::core::RobotStatePtr> trajectory_states;
-
-        // Convert waypoints to EigenSTL::vector_Isometry3d
-        EigenSTL::vector_Isometry3d waypoints_eigen;
-        for (const auto &pose_msg : waypoints)
-        {
-            Eigen::Isometry3d pose_eigen;
-            tf2::fromMsg(pose_msg, pose_eigen);
-            waypoints_eigen.push_back(pose_eigen);
-        }
-
-        moveit::core::MaxEEFStep max_step(config.step_size, 0.0);
-        moveit::core::JumpThreshold jump_threshold(config.jump_threshold, config.jump_threshold);
-
-        // Define the validity callback
-        moveit::core::GroupStateValidityCallbackFn validity_callback =
-            [moveit_cpp_ptr](moveit::core::RobotState *state, const moveit::core::JointModelGroup *group,
-                             const double *joint_group_variable_values)
-        {
-            state->setJointGroupPositions(group, joint_group_variable_values);
-            state->update();
-            return !planning_scene_monitor::LockedPlanningSceneRO(moveit_cpp_ptr->getPlanningSceneMonitor())->isStateColliding(*state, group->getName());
-        };
-
-        double achieved_fraction = moveit::core::CartesianInterpolator::computeCartesianPath(
-            current_state.get(), joint_model_group_ptr, trajectory_states, link_model,
-            waypoints_eigen, true /* global_reference_frame */, max_step, jump_threshold,
-            validity_callback);
-
-        if (achieved_fraction >= linear_success_tolerance)
-        {
-            // Create a RobotTrajectory
-            auto trajectory = std::make_shared<robot_trajectory::RobotTrajectory>(robot_model_ptr, planning_components->getPlanningGroupName());
-
-            // Add the waypoints to the trajectory
-            for (size_t i = 0; i < trajectory_states.size(); ++i)
-            {
-                trajectory->addSuffixWayPoint(trajectory_states[i], 0.0); // Time will be updated
-            }
-
-            double path_length = computePathLength(*trajectory);
-            trajectories.emplace_back(trajectory, path_length);
-        }
-        else
-        {
-            RCLCPP_WARN(logger, "Cartesian path planning attempt %d failed (%.2f%% achieved).", attempts + 1, achieved_fraction * 100.0);
-        }
-        attempts++;
-    }
-
-    if (trajectories.empty())
-    {
-        RCLCPP_ERROR(logger, "Failed to compute any valid Cartesian path.");
-        return false;
-    }
-
-    RCLCPP_INFO(logger, "Computed %zu trajectories in %d attempts.", trajectories.size(), attempts);
-
-    // Select the shortest trajectory
-    auto shortest_trajectory_pair = std::min_element(
-        trajectories.begin(), trajectories.end(),
-        [](const auto &a, const auto &b)
-        { return a.second < b.second; });
-
-    // Apply time parameterization
-    if (!applyTimeParameterization(shortest_trajectory_pair->first, config, logger))
-    {
-        return false;
-    }
-
-    // Execute the trajectory using MoveItCpp
     int retry_count = 0;
     bool execution_success = false;
-    while (retry_count < config.max_retries && !execution_success)
+    while (retry_count < config.max_exec_retries && !execution_success)
     {
-        execution_success = moveit_cpp_ptr->execute(
-            planning_components->getPlanningGroupName(), shortest_trajectory_pair->first);
-        if (execution_success)
-        {
-            // Wait for the execution to complete
-            auto tem = moveit_cpp_ptr->getTrajectoryExecutionManager();
-            bool wait_success = tem->waitForExecution();
+        // Get the robot model and joint model group
+        auto robot_model_ptr = moveit_cpp_ptr->getRobotModel();
+        auto joint_model_group_ptr = robot_model_ptr->getJointModelGroup(planning_components->getPlanningGroupName());
 
-            // Check if execution completed successfully
-            if (!wait_success || tem->getLastExecutionStatus() != moveit_controller_manager::ExecutionStatus::SUCCEEDED)
-            {
-                RCLCPP_WARN(logger, "Execution failed to complete successfully.");
-                execution_success = false;
-            }
-        }
-        else
+        // Specify the end-effector link name
+        const moveit::core::LinkModel *link_model = robot_model_ptr->getLinkModel(TCP_FRAME);
+
+        std::vector<std::pair<robot_trajectory::RobotTrajectoryPtr, double>> trajectories;
+        int attempts = 0;
+
+        while (attempts < config.plan_number_limit &&
+               static_cast<int>(trajectories.size()) < config.plan_number_target)
         {
-            RCLCPP_WARN(logger, "Execution failed, retrying...");
+            // Update current state before each attempt
+            planning_components->setStartStateToCurrentState();
+            auto current_state = moveit_cpp_ptr->getCurrentState();
+
+            std::vector<moveit::core::RobotStatePtr> trajectory_states;
+
+            // Convert waypoints to EigenSTL::vector_Isometry3d
+            EigenSTL::vector_Isometry3d waypoints_eigen;
+            for (const auto &pose_msg : waypoints)
+            {
+                Eigen::Isometry3d pose_eigen;
+                tf2::fromMsg(pose_msg, pose_eigen);
+                waypoints_eigen.push_back(pose_eigen);
+            }
+
+            moveit::core::MaxEEFStep max_step(config.step_size, config.step_size * 2);
+            moveit::core::JumpThreshold jump_threshold(config.jump_threshold, config.jump_threshold);
+
+            // Define the validity callback
+            moveit::core::GroupStateValidityCallbackFn validity_callback =
+                [moveit_cpp_ptr](moveit::core::RobotState *state, const moveit::core::JointModelGroup *group,
+                                 const double *joint_group_variable_values)
+            {
+                state->setJointGroupPositions(group, joint_group_variable_values);
+                state->update();
+                return !planning_scene_monitor::LockedPlanningSceneRO(moveit_cpp_ptr->getPlanningSceneMonitor())->isStateColliding(*state, group->getName());
+            };
+
+            double achieved_fraction = moveit::core::CartesianInterpolator::computeCartesianPath(
+                current_state.get(), joint_model_group_ptr, trajectory_states, link_model,
+                waypoints_eigen, true /* global_reference_frame */, max_step, jump_threshold,
+                validity_callback);
+
+            if (achieved_fraction >= linear_success_tolerance)
+            {
+                // Create a RobotTrajectory
+                auto trajectory = std::make_shared<robot_trajectory::RobotTrajectory>(robot_model_ptr, planning_components->getPlanningGroupName());
+
+                // Add the waypoints to the trajectory
+                for (size_t i = 0; i < trajectory_states.size(); ++i)
+                {
+                    trajectory->addSuffixWayPoint(trajectory_states[i], 0.0); // Time will be updated
+                }
+
+                double path_length = computePathLength(*trajectory);
+                trajectories.emplace_back(trajectory, path_length);
+            }
+            else
+            {
+                RCLCPP_WARN(logger, "Cartesian path planning attempt %d failed (%.2f%% achieved).", attempts + 1, achieved_fraction * 100.0);
+            }
+            attempts++;
         }
+
+        if (trajectories.empty())
+        {
+            RCLCPP_ERROR(logger, "Failed to compute any valid Cartesian path.");
+            return false;
+        }
+
+        RCLCPP_INFO(logger, "Computed %zu trajectories in %d attempts.", trajectories.size(), attempts);
+
+        // Select the shortest trajectory
+        auto shortest_trajectory_pair = std::min_element(
+            trajectories.begin(), trajectories.end(),
+            [](const auto &a, const auto &b)
+            { return a.second < b.second; });
+
+        // Apply time parameterization
+        if (!applyTimeParameterization(shortest_trajectory_pair->first, config, logger))
+        {
+            return false;
+        }
+
+        // Execute the trajectory using MoveItCpp
+        execution_success = executeTrajectory(moveit_cpp_ptr, shortest_trajectory_pair->first, planning_components->getPlanningGroupName(), logger);
+
         retry_count++;
     }
 
@@ -533,15 +474,16 @@ bool moveCartesianPath(
 
 int main(int argc, char **argv)
 {
-    // Initialize ROS and create the Node
+    // Initialize ROS
     rclcpp::init(argc, argv);
     rclcpp::NodeOptions node_options;
-    RCLCPP_INFO(LOGGER, "Initialize node");
 
+    // Create a ROS logger
+    RCLCPP_INFO(logger, "Initialize node");
+
+    // Create the Node
     node_options.automatically_declare_parameters_from_overrides(true);
     rclcpp::Node::SharedPtr node = rclcpp::Node::make_shared("run_moveit_cpp", "", node_options);
-    // Create a ROS logger
-    auto logger = node->get_logger();
 
     // We spin up a SingleThreadedExecutor so MoveItVisualTools interact with ROS
     rclcpp::executors::SingleThreadedExecutor executor;
@@ -560,7 +502,7 @@ int main(int argc, char **argv)
     MovementConfig max_move_config;
     node->get_parameter_or<double>("velocity_scaling_factor", max_move_config.velocity_scaling_factor, 0.5);
     node->get_parameter_or<double>("acceleration_scaling_factor", max_move_config.acceleration_scaling_factor, 0.5);
-    node->get_parameter_or<int>("max_retries", max_move_config.max_retries, 5);
+    node->get_parameter_or<int>("max_exec_retries", max_move_config.max_exec_retries, 5);
     node->get_parameter_or<std::string>("smoothing_type", max_move_config.smoothing_type, "iterative_parabolic");
     node->get_parameter_or<double>("step_size", max_move_config.step_size, 0.05);
     node->get_parameter_or<double>("jump_threshold", max_move_config.jump_threshold, 0.0);
@@ -582,7 +524,7 @@ int main(int argc, char **argv)
     // Create the PlanningComponent
     auto planning_components = std::make_shared<moveit_cpp::PlanningComponent>(robot_type, moveit_cpp_ptr);
 
-    RCLCPP_INFO_STREAM(LOGGER, "Set smoothing type: " << max_move_config.smoothing_type);
+    RCLCPP_INFO_STREAM(logger, "Set smoothing type: " << max_move_config.smoothing_type);
     auto robot_model = moveit_cpp_ptr->getRobotModel();
     auto joint_model_group = robot_model->getJointModelGroup(planning_components->getPlanningGroupName());
     const std::vector<std::string> &joint_names = joint_model_group->getActiveJointModelNames();

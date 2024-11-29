@@ -19,7 +19,7 @@ struct MovementConfig {
   double step_size = 0.05;
   double jump_threshold = 0.0;
   std::string smoothing_type = "time_optimal";
-  int max_retries = 5;
+  int max_exec_retries = 5;
   int plan_number_target = 12;
   int plan_number_limit = 32;
 };
@@ -94,7 +94,7 @@ bool moveCartesianPath(
   trajectory.setRobotTrajectoryMsg(*move_group_interface.getCurrentState(), trajectory_msg);
 
   // Apply smoothing as per config
-  while ((retry_count <= config.max_retries) && (!smoothing_success)) {
+  while ((retry_count <= config.max_exec_retries) && (!smoothing_success)) {
     if (config.smoothing_type == "time_optimal") {
       trajectory_processing::TimeOptimalTrajectoryGeneration time_param;
       smoothing_success = time_param.computeTimeStamps(
@@ -122,7 +122,7 @@ bool moveCartesianPath(
   move_group_interface.setMaxVelocityScalingFactor(config.velocity_scaling_factor);
   move_group_interface.setMaxAccelerationScalingFactor(config.acceleration_scaling_factor);
 
-  while (retry_count < config.max_retries) {
+  while (retry_count < config.max_exec_retries) {
     if (move_group_interface.execute(trajectory_msg) == moveit::core::MoveItErrorCode::SUCCESS) {
       return true;
     }
@@ -170,7 +170,7 @@ bool moveToPoseTarget(
       [](const auto& a, const auto& b) { return a.second < b.second; });
 
   int retry_count = 0;
-  while (retry_count < config.max_retries) {
+  while (retry_count < config.max_exec_retries) {
     if (move_group_interface.execute(shortest_trajectory->first) == moveit::core::MoveItErrorCode::SUCCESS) {
       return true;
     }
@@ -218,7 +218,7 @@ bool moveToNamedTarget(
       [](const auto& a, const auto& b) { return a.second < b.second; });
 
   int retry_count = 0;
-  while (retry_count < config.max_retries) {
+  while (retry_count < config.max_exec_retries) {
     if (move_group_interface.execute(shortest_trajectory->first) == moveit::core::MoveItErrorCode::SUCCESS) {
       return true;
     }
@@ -269,7 +269,7 @@ bool moveToJointTarget(
       [](const auto &a, const auto &b) { return a.second < b.second; });
 
   int retry_count = 0;
-  while (retry_count < config.max_retries) {
+  while (retry_count < config.max_exec_retries) {
     if (move_group_interface.execute(shortest_trajectory_pair->first) == moveit::core::MoveItErrorCode::SUCCESS) {
       return true;
     }
@@ -305,7 +305,7 @@ int main(int argc, char *argv[]) {
   MovementConfig std_move_config;
   node->get_parameter_or<double>("velocity_scaling_factor", std_move_config.velocity_scaling_factor, 0.9);
   node->get_parameter_or<double>("acceleration_scaling_factor", std_move_config.acceleration_scaling_factor, 0.9);
-  node->get_parameter_or<int>("max_retries", std_move_config.max_retries, 5);
+  node->get_parameter_or<int>("max_exec_retries", std_move_config.max_exec_retries, 5);
   node->get_parameter_or<std::string>("smoothing_type", std_move_config.smoothing_type, "time_optimal");
   node->get_parameter_or<double>("step_size", std_move_config.step_size, 0.05);
   node->get_parameter_or<double>("jump_threshold", std_move_config.jump_threshold, 0.0);

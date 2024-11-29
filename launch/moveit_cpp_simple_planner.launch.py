@@ -50,7 +50,7 @@ def launch_setup(context, *args, **kwargs):
     # Retrieve your custom parameters
     velocity_scaling_factor = LaunchConfiguration('velocity_scaling_factor')
     acceleration_scaling_factor = LaunchConfiguration('acceleration_scaling_factor')
-    max_retries = LaunchConfiguration('max_retries')
+    max_exec_retries = LaunchConfiguration('max_exec_retries')
     smoothing_type = LaunchConfiguration('smoothing_type')
     step_size = LaunchConfiguration('step_size')
     jump_threshold = LaunchConfiguration('jump_threshold')
@@ -128,7 +128,7 @@ def launch_setup(context, *args, **kwargs):
             {
                 'velocity_scaling_factor': velocity_scaling_factor,
                 'acceleration_scaling_factor': acceleration_scaling_factor,
-                'max_retries': max_retries,
+                'max_exec_retries': max_exec_retries,
                 'smoothing_type': smoothing_type,
                 'step_size': step_size,
                 'jump_threshold': jump_threshold,
@@ -152,7 +152,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('velocity_scaling_factor', default_value='0.9', description='Velocity scaling factor'),
         DeclareLaunchArgument('acceleration_scaling_factor', default_value='0.9', description='Acceleration scaling factor'),
-        DeclareLaunchArgument('max_retries', default_value='5', description='Maximum number of retries'),
+        DeclareLaunchArgument('max_exec_retries', default_value='5', description='Maximum number of retries'),
         DeclareLaunchArgument('smoothing_type', default_value='iterative_parabolic', description='Smoothing type'),
         DeclareLaunchArgument('step_size', default_value='0.05', description='Step size'),
         DeclareLaunchArgument('jump_threshold', default_value='0.0', description='Jump threshold'),
