@@ -70,6 +70,15 @@ def launch_setup(context, *args, **kwargs):
         robot_type=robot_type.perform(context)
     )
 
+    # moveit_configs.robot_description
+    # moveit_configs.robot_description_semantic
+    # moveit_configs.robot_description_kinematics
+    # moveit_configs.planning_pipelines
+    # moveit_configs.trajectory_execution
+    # moveit_configs.planning_scene_monitor
+    # moveit_configs.joint_limits
+    # moveit_configs.to_dict()
+
     moveit_configs = MoveItConfigsBuilder(
         context=context,
         controllers_name=controllers_name,

@@ -423,6 +423,7 @@ bool moveCartesianPath(
     {
         // Update current state before each attempt
         auto current_state = moveit_cpp_ptr->getCurrentState();
+        planning_components->setStartStateToCurrentState();
 
         std::vector<moveit::core::RobotStatePtr> trajectory_states;
 
@@ -582,6 +583,18 @@ int main(int argc, char **argv)
     auto planning_components = std::make_shared<moveit_cpp::PlanningComponent>(robot_type, moveit_cpp_ptr);
 
     RCLCPP_INFO_STREAM(LOGGER, "Set smoothing type: " << max_move_config.smoothing_type);
+    auto robot_model = moveit_cpp_ptr->getRobotModel();
+    auto joint_model_group = robot_model->getJointModelGroup(planning_components->getPlanningGroupName());
+    const std::vector<std::string> &joint_names = joint_model_group->getActiveJointModelNames();
+
+    for (const auto &joint_name : joint_names)
+    {
+        const auto &joint_model = robot_model->getJointModel(joint_name);
+        const auto &bounds = joint_model->getVariableBounds(joint_name);
+
+        RCLCPP_INFO(logger, "Joint '%s': max_velocity=%f, max_acceleration=%f",
+                    joint_name.c_str(), bounds.max_velocity_, bounds.max_acceleration_);
+    }
     // rclcpp::sleep_for(std::chrono::seconds(1));
 
     // Create a collision object for the robot to avoid
@@ -649,36 +662,42 @@ int main(int argc, char **argv)
 
     // MOVEMENTS SEQUENCE
     bool result = false;
+    int counter = 0;
 
     // Move to joint target
     do
     {
         result = moveToJointTarget(moveit_cpp_ptr, planning_components, ready_joint_values, max_move_config, logger);
-    } while (!result);
+        counter++;
+    } while ((!result) && (counter < 16));
 
     // Move to pose target
     do
     {
         result = moveToPoseTarget(moveit_cpp_ptr, planning_components, approach_pose, mid_move_config, logger, BASE_FRAME, TCP_FRAME);
-    } while (!result);
+        counter++;
+    } while ((!result) && (counter < 16));
 
     // Move to Cartesian path (grasp)
     do
     {
         result = moveCartesianPath(moveit_cpp_ptr, planning_components, grasp_waypoints, slow_move_config, logger, TCP_FRAME);
-    } while (!result);
+        counter++;
+    } while ((!result) && (counter < 16));
 
     // Retract to Cartesian path (approach)
     do
     {
         result = moveCartesianPath(moveit_cpp_ptr, planning_components, approach_waypoints, mid_move_config, logger, TCP_FRAME);
-    } while (!result);
+        counter++;
+    } while ((!result) && (counter < 16));
 
     // Move to named target ("home")
     do
     {
         result = moveToNamedTarget(moveit_cpp_ptr, planning_components, "home", max_move_config, logger);
-    } while (!result);
+        counter++;
+    } while ((!result) && (counter < 16));
 
     // Shutdown ROS
     rclcpp::shutdown();
