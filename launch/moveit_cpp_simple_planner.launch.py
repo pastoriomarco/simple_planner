@@ -54,6 +54,7 @@ def launch_setup(context, *args, **kwargs):
     smoothing_type = LaunchConfiguration('smoothing_type')
     step_size = LaunchConfiguration('step_size')
     jump_threshold = LaunchConfiguration('jump_threshold')
+    max_cartesian_speed = LaunchConfiguration('max_cartesian_speed')
     plan_number_target = LaunchConfiguration('plan_number_target')
     plan_number_limit = LaunchConfiguration('plan_number_limit')
 
@@ -132,6 +133,7 @@ def launch_setup(context, *args, **kwargs):
                 'smoothing_type': smoothing_type,
                 'step_size': step_size,
                 'jump_threshold': jump_threshold,
+                'max_cartesian_speed': max_cartesian_speed,
                 'plan_number_target': plan_number_target,
                 'plan_number_limit': plan_number_limit,
             }
@@ -156,6 +158,7 @@ def generate_launch_description():
         DeclareLaunchArgument('smoothing_type', default_value='iterative_parabolic', description='Smoothing type'),
         DeclareLaunchArgument('step_size', default_value='0.05', description='Step size'),
         DeclareLaunchArgument('jump_threshold', default_value='0.0', description='Jump threshold'),
+        DeclareLaunchArgument('max_cartesian_speed', default_value='0.5', description='Max cartesian speed'),
         DeclareLaunchArgument('plan_number_target', default_value='12', description='Plan number target'),
         DeclareLaunchArgument('plan_number_limit', default_value='32', description='Plan number limit'),
         OpaqueFunction(function=launch_setup)

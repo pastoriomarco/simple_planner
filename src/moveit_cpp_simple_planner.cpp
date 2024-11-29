@@ -36,14 +36,15 @@ struct MovementConfig
     double acceleration_scaling_factor = 0.5;
     double step_size = 0.01;
     double jump_threshold = 0.0;
-    std::string smoothing_type = "iterative_parabolic";
+    double max_cartesian_speed = 0.5;
     int max_exec_retries = 5;
     int plan_number_target = 12;
     int plan_number_limit = 32;
+    std::string smoothing_type = "iterative_parabolic";
 };
 
 // Compute the length of a trajectory
-double computePathLength(const robot_trajectory::RobotTrajectory &trajectory)
+double computePathLength(const robot_trajectory::RobotTrajectory &trajectory, const std::string &tcp_frame)
 {
     double total_length = 0.0;
     const size_t waypoint_count = trajectory.getWayPointCount();
@@ -53,57 +54,134 @@ double computePathLength(const robot_trajectory::RobotTrajectory &trajectory)
         const moveit::core::RobotState &prev_state = trajectory.getWayPoint(i - 1);
         const moveit::core::RobotState &curr_state = trajectory.getWayPoint(i);
 
-        std::vector<double> prev_positions;
-        std::vector<double> curr_positions;
-        prev_state.copyJointGroupPositions(trajectory.getGroupName(), prev_positions);
-        curr_state.copyJointGroupPositions(trajectory.getGroupName(), curr_positions);
+        Eigen::Isometry3d prev_pose = prev_state.getGlobalLinkTransform(tcp_frame);
+        Eigen::Isometry3d curr_pose = curr_state.getGlobalLinkTransform(tcp_frame);
 
-        double segment_length = 0.0;
-        for (size_t j = 0; j < prev_positions.size(); ++j)
-        {
-            double diff = curr_positions[j] - prev_positions[j];
-            segment_length += diff * diff;
-        }
-        total_length += std::sqrt(segment_length);
+        double distance = (curr_pose.translation() - prev_pose.translation()).norm();
+        total_length += distance;
     }
 
     return total_length;
 }
 
-// Function to apply time parameterization
+// Function to compute maximum Cartesian speed in the trajectory
+double computeMaxCartesianSpeed(
+    const robot_trajectory::RobotTrajectoryPtr &trajectory,
+    const std::string &tcp_frame)
+{
+    const size_t waypoint_count = trajectory->getWayPointCount();
+    if (waypoint_count < 2)
+    {
+        return 0.0;
+    }
+
+    double max_speed = 0.0;
+
+    for (size_t i = 1; i < waypoint_count; ++i)
+    {
+        auto prev_state = trajectory->getWayPointPtr(i - 1);
+        auto curr_state = trajectory->getWayPointPtr(i);
+
+        // Get TCP positions
+        const Eigen::Isometry3d prev_pose = prev_state->getGlobalLinkTransform(tcp_frame);
+        const Eigen::Isometry3d curr_pose = curr_state->getGlobalLinkTransform(tcp_frame);
+
+        // Compute Cartesian distance
+        double distance = (curr_pose.translation() - prev_pose.translation()).norm();
+
+        // Get duration between waypoints
+        double duration = trajectory->getWayPointDurationFromPrevious(i);
+
+        // Compute Cartesian speed
+        double cartesian_speed = distance / duration;
+
+        if (cartesian_speed > max_speed)
+        {
+            max_speed = cartesian_speed;
+        }
+    }
+
+    return max_speed;
+}
+
+// Function to apply time parameterization with adjusted scaling factors
 bool applyTimeParameterization(
     const robot_trajectory::RobotTrajectoryPtr &trajectory,
     const MovementConfig &config,
+    const std::string &tcp_frame,
     const rclcpp::Logger &logger)
 {
+    // Copy the scaling factors so we can adjust them locally
+    double velocity_scaling_factor = config.velocity_scaling_factor;
+    double acceleration_scaling_factor = config.acceleration_scaling_factor;
+
+    const int max_iterations = 5;
+    int iteration = 0;
     bool time_param_success = false;
-    if (config.smoothing_type == "time_optimal")
-    {
-        trajectory_processing::TimeOptimalTrajectoryGeneration time_param;
-        time_param_success = time_param.computeTimeStamps(*trajectory,
-                                                          config.velocity_scaling_factor,
-                                                          config.acceleration_scaling_factor);
-    }
-    else // if (config.smoothing_type == "iterative_parabolic")
-    {
-        trajectory_processing::IterativeParabolicTimeParameterization time_param;
-        time_param_success = time_param.computeTimeStamps(*trajectory,
-                                                          config.velocity_scaling_factor,
-                                                          config.acceleration_scaling_factor);
-    }
-    // else
-    // {
-    //     RCLCPP_WARN(logger, "Unknown smoothing type '%s'. No time parameterization applied.", config.smoothing_type.c_str());
-    //     time_param_success = true; // Proceed without time parameterization
-    // }
 
-    if (!time_param_success)
+    while (iteration < max_iterations)
     {
-        RCLCPP_ERROR(logger, "Failed to compute time stamps for the trajectory using '%s' smoothing.",
-                     config.smoothing_type.c_str());
+        // Remove existing timing by resetting durations to zero
+        for (size_t i = 1; i < trajectory->getWayPointCount(); ++i)
+        {
+            trajectory->setWayPointDurationFromPrevious(i, 0.0);
+        }
+
+        // Apply time parameterization
+        if (config.smoothing_type == "time_optimal")
+        {
+            trajectory_processing::TimeOptimalTrajectoryGeneration time_param;
+            time_param_success = time_param.computeTimeStamps(*trajectory,
+                                                              velocity_scaling_factor,
+                                                              acceleration_scaling_factor);
+        }
+        else // if (config.smoothing_type == "iterative_parabolic")
+        {
+            trajectory_processing::IterativeParabolicTimeParameterization time_param;
+            time_param_success = time_param.computeTimeStamps(*trajectory,
+                                                              velocity_scaling_factor,
+                                                              acceleration_scaling_factor);
+        }
+
+        if (!time_param_success)
+        {
+            RCLCPP_ERROR(logger, "Failed to compute time stamps for the trajectory using '%s' smoothing.",
+                         config.smoothing_type.c_str());
+            return false;
+        }
+
+        // Compute the maximum Cartesian speed achieved
+        double max_cartesian_speed_achieved = computeMaxCartesianSpeed(trajectory, tcp_frame);
+
+        if (max_cartesian_speed_achieved <= config.max_cartesian_speed)
+        {
+            // Success, the Cartesian speed is within limits
+            return true;
+        }
+        else
+        {
+            // Adjust scaling factors proportionally
+            double scaling_factor = config.max_cartesian_speed / max_cartesian_speed_achieved;
+            velocity_scaling_factor *= scaling_factor;
+            acceleration_scaling_factor *= scaling_factor;
+
+            RCLCPP_WARN(logger, "Adjusted scaling factors to limit Cartesian speed: velocity_scaling_factor=%.3f, acceleration_scaling_factor=%.3f",
+                        velocity_scaling_factor, acceleration_scaling_factor);
+
+            // Ensure scaling factors do not become too small
+            const double min_scaling_factor = 0.01;
+            if (velocity_scaling_factor < min_scaling_factor || acceleration_scaling_factor < min_scaling_factor)
+            {
+                RCLCPP_ERROR(logger, "Scaling factors became too small. Cannot limit Cartesian speed further without violating joint limits.");
+                return false;
+            }
+        }
+
+        iteration++;
     }
 
-    return time_param_success;
+    RCLCPP_ERROR(logger, "Failed to limit Cartesian speed within the maximum allowed after %d iterations.", max_iterations);
+    return false;
 }
 
 // Function to perform trajectory execution
@@ -167,7 +245,7 @@ bool moveToPoseTarget(
 
             if (plan_solution.error_code.val == moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
             {
-                double path_length = computePathLength(*plan_solution.trajectory);
+                double path_length = computePathLength(*plan_solution.trajectory, TCP_FRAME);
                 trajectories.emplace_back(plan_solution, path_length);
             }
             else
@@ -192,7 +270,7 @@ bool moveToPoseTarget(
             { return a.second < b.second; });
 
         // Apply time parameterization
-        if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
+        if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, TCP_FRAME, logger))
         {
             return false;
         }
@@ -217,6 +295,7 @@ bool moveToJointTarget(
     const moveit_cpp::PlanningComponentPtr &planning_components,
     const std::vector<double> &joint_values,
     const MovementConfig &config,
+    const std::string &TCP_FRAME,
     const rclcpp::Logger &logger)
 {
     int retry_count = 0;
@@ -242,7 +321,7 @@ bool moveToJointTarget(
 
             if (plan_solution.error_code.val == moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
             {
-                double path_length = computePathLength(*plan_solution.trajectory);
+                double path_length = computePathLength(*plan_solution.trajectory, TCP_FRAME);
                 trajectories.emplace_back(plan_solution, path_length);
             }
             else
@@ -267,7 +346,7 @@ bool moveToJointTarget(
             { return a.second < b.second; });
 
         // Apply time parameterization
-        if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
+        if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, TCP_FRAME, logger))
         {
             return false;
         }
@@ -292,6 +371,7 @@ bool moveToNamedTarget(
     const moveit_cpp::PlanningComponentPtr &planning_components,
     const std::string &target_name,
     const MovementConfig &config,
+    const std::string &TCP_FRAME,
     const rclcpp::Logger &logger)
 {
     int retry_count = 0;
@@ -312,7 +392,7 @@ bool moveToNamedTarget(
 
             if (plan_solution.error_code.val == moveit_msgs::msg::MoveItErrorCodes::SUCCESS)
             {
-                double path_length = computePathLength(*plan_solution.trajectory);
+                double path_length = computePathLength(*plan_solution.trajectory, TCP_FRAME);
                 trajectories.emplace_back(plan_solution, path_length);
             }
             else
@@ -337,7 +417,7 @@ bool moveToNamedTarget(
             { return a.second < b.second; });
 
         // Apply time parameterization
-        if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
+        if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, TCP_FRAME, logger))
         {
             return false;
         }
@@ -427,7 +507,7 @@ bool moveCartesianPath(
                     trajectory->addSuffixWayPoint(trajectory_states[i], 0.0); // Time will be updated
                 }
 
-                double path_length = computePathLength(*trajectory);
+                double path_length = computePathLength(*trajectory, TCP_FRAME);
                 trajectories.emplace_back(trajectory, path_length);
             }
             else
@@ -452,7 +532,7 @@ bool moveCartesianPath(
             { return a.second < b.second; });
 
         // Apply time parameterization
-        if (!applyTimeParameterization(shortest_trajectory_pair->first, config, logger))
+        if (!applyTimeParameterization(shortest_trajectory_pair->first, config, TCP_FRAME, logger))
         {
             return false;
         }
@@ -502,20 +582,23 @@ int main(int argc, char **argv)
     MovementConfig max_move_config;
     node->get_parameter_or<double>("velocity_scaling_factor", max_move_config.velocity_scaling_factor, 0.5);
     node->get_parameter_or<double>("acceleration_scaling_factor", max_move_config.acceleration_scaling_factor, 0.5);
-    node->get_parameter_or<int>("max_exec_retries", max_move_config.max_exec_retries, 5);
-    node->get_parameter_or<std::string>("smoothing_type", max_move_config.smoothing_type, "iterative_parabolic");
     node->get_parameter_or<double>("step_size", max_move_config.step_size, 0.05);
     node->get_parameter_or<double>("jump_threshold", max_move_config.jump_threshold, 0.0);
+    node->get_parameter_or<double>("max_cartesian_speed", max_move_config.max_cartesian_speed, 0.5);
+    node->get_parameter_or<int>("max_exec_retries", max_move_config.max_exec_retries, 5);
     node->get_parameter_or<int>("plan_number_target", max_move_config.plan_number_target, 12);
     node->get_parameter_or<int>("plan_number_limit", max_move_config.plan_number_limit, 32);
+    node->get_parameter_or<std::string>("smoothing_type", max_move_config.smoothing_type, "iterative_parabolic");
 
     MovementConfig mid_move_config = max_move_config;
     mid_move_config.velocity_scaling_factor = max_move_config.velocity_scaling_factor / 2.0;
     mid_move_config.acceleration_scaling_factor = max_move_config.acceleration_scaling_factor / 2.0;
+    mid_move_config.max_cartesian_speed = 0.2;
 
     MovementConfig slow_move_config = max_move_config;
     slow_move_config.velocity_scaling_factor = max_move_config.velocity_scaling_factor / 4.0;
     slow_move_config.acceleration_scaling_factor = max_move_config.acceleration_scaling_factor / 4.0;
+    slow_move_config.max_cartesian_speed = 0.02;
 
     // Create the MoveItCpp instance
     auto moveit_cpp_ptr = std::make_shared<moveit_cpp::MoveItCpp>(node);
@@ -609,7 +692,7 @@ int main(int argc, char **argv)
     // Move to joint target
     do
     {
-        result = moveToJointTarget(moveit_cpp_ptr, planning_components, ready_joint_values, max_move_config, logger);
+        result = moveToJointTarget(moveit_cpp_ptr, planning_components, ready_joint_values, max_move_config, TCP_FRAME, logger);
         counter++;
     } while ((!result) && (counter < 16));
 
@@ -637,7 +720,7 @@ int main(int argc, char **argv)
     // Move to named target ("home")
     do
     {
-        result = moveToNamedTarget(moveit_cpp_ptr, planning_components, "home", max_move_config, logger);
+        result = moveToNamedTarget(moveit_cpp_ptr, planning_components, "home", max_move_config, TCP_FRAME, logger);
         counter++;
     } while ((!result) && (counter < 16));
 
