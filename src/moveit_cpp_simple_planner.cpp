@@ -32,16 +32,28 @@ namespace rvt = rviz_visual_tools;
 // Logger
 static const rclcpp::Logger LOGGER = rclcpp::get_logger("moveit_cpp_simple_planner");
 
+struct MovementConfig
+{
+    double velocity_scaling_factor = 0.5;
+    double acceleration_scaling_factor = 0.5;
+    double step_size = 0.05;
+    double jump_threshold = 0.0;
+    std::string smoothing_type = "iterative_parabolic";
+    int max_retries = 5;
+    int plan_number_target = 12;
+    int plan_number_limit = 32;
+};
+
 // Compute the length of a trajectory
-double computePathLength(const robot_trajectory::RobotTrajectory& trajectory)
+double computePathLength(const robot_trajectory::RobotTrajectory &trajectory)
 {
     double total_length = 0.0;
     const size_t waypoint_count = trajectory.getWayPointCount();
 
     for (size_t i = 1; i < waypoint_count; ++i)
     {
-        const moveit::core::RobotState& prev_state = trajectory.getWayPoint(i - 1);
-        const moveit::core::RobotState& curr_state = trajectory.getWayPoint(i);
+        const moveit::core::RobotState &prev_state = trajectory.getWayPoint(i - 1);
+        const moveit::core::RobotState &curr_state = trajectory.getWayPoint(i);
 
         std::vector<double> prev_positions;
         std::vector<double> curr_positions;
@@ -60,26 +72,64 @@ double computePathLength(const robot_trajectory::RobotTrajectory& trajectory)
     return total_length;
 }
 
-struct MovementConfig
+// Function to apply time parameterization
+bool applyTimeParameterization(
+    const robot_trajectory::RobotTrajectoryPtr &trajectory,
+    const MovementConfig &config,
+    const rclcpp::Logger &logger)
 {
-    double velocity_scaling_factor = 0.5;
-    double acceleration_scaling_factor = 0.5;
-    double step_size = 0.05;
-    double jump_threshold = 0.0;
-    std::string smoothing_type = "time_optimal";
-    int max_retries = 5;
-    int plan_number_target = 12;
-    int plan_number_limit = 32;
-};
+    bool time_param_success = false;
+    if (config.smoothing_type == "iterative_parabolic")
+    {
+        trajectory_processing::IterativeParabolicTimeParameterization time_param;
+        time_param_success = time_param.computeTimeStamps(*trajectory,
+                                                          config.velocity_scaling_factor,
+                                                          config.acceleration_scaling_factor);
+    }
+    else if (config.smoothing_type == "time_optimal")
+    {
+        trajectory_processing::TimeOptimalTrajectoryGeneration time_param;
+        time_param_success = time_param.computeTimeStamps(*trajectory,
+                                                          config.velocity_scaling_factor,
+                                                          config.acceleration_scaling_factor);
+    }
+    else if (config.smoothing_type == "iterative_spline")
+    {
+        trajectory_processing::IterativeSplineParameterization time_param;
+        time_param_success = time_param.computeTimeStamps(*trajectory,
+                                                          config.velocity_scaling_factor,
+                                                          config.acceleration_scaling_factor);
+    }
+    else if (config.smoothing_type == "ruckig")
+    {
+        time_param_success = trajectory_processing::RuckigSmoothing::applySmoothing(
+            *trajectory,
+            config.velocity_scaling_factor,
+            config.acceleration_scaling_factor);
+    }
+    else
+    {
+        RCLCPP_WARN(logger, "Unknown smoothing type '%s'. No time parameterization applied.", config.smoothing_type.c_str());
+        time_param_success = true; // Proceed without time parameterization
+    }
+
+    if (!time_param_success)
+    {
+        RCLCPP_ERROR(logger, "Failed to compute time stamps for the trajectory using '%s' smoothing.",
+                     config.smoothing_type.c_str());
+    }
+
+    return time_param_success;
+}
 
 bool moveToPoseTarget(
-    const moveit_cpp::MoveItCppPtr& moveit_cpp_ptr,
-    const moveit_cpp::PlanningComponentPtr& planning_components,
-    const geometry_msgs::msg::Pose& target_pose,
-    const MovementConfig& config,
-    const rclcpp::Logger& logger,
-    const std::string& BASE_FRAME,
-    const std::string& TCP_FRAME)
+    const moveit_cpp::MoveItCppPtr &moveit_cpp_ptr,
+    const moveit_cpp::PlanningComponentPtr &planning_components,
+    const geometry_msgs::msg::Pose &target_pose,
+    const MovementConfig &config,
+    const rclcpp::Logger &logger,
+    const std::string &BASE_FRAME,
+    const std::string &TCP_FRAME)
 {
     // Set the start state to the current state
     planning_components->setStartStateToCurrentState();
@@ -123,35 +173,12 @@ bool moveToPoseTarget(
     // Select the shortest trajectory
     auto shortest_trajectory_pair = std::min_element(
         trajectories.begin(), trajectories.end(),
-        [](const auto& a, const auto& b) { return a.second < b.second; });
+        [](const auto &a, const auto &b)
+        { return a.second < b.second; });
 
-    // Apply time parameterization based on smoothing_type
-    bool time_param_success = false;
-    if (config.smoothing_type == "time_optimal")
+    // Apply time parameterization
+    if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
     {
-        trajectory_processing::TimeOptimalTrajectoryGeneration time_param;
-        time_param_success = time_param.computeTimeStamps(*shortest_trajectory_pair->first.trajectory,
-                                                          config.velocity_scaling_factor,
-                                                          config.acceleration_scaling_factor);
-    }
-    else if (config.smoothing_type == "iterative")
-    {
-        trajectory_processing::IterativeSplineParameterization time_param;
-        time_param_success = time_param.computeTimeStamps(*shortest_trajectory_pair->first.trajectory,
-                                                          config.velocity_scaling_factor,
-                                                          config.acceleration_scaling_factor);
-    }
-    else
-    {
-        time_param_success = trajectory_processing::RuckigSmoothing::applySmoothing(
-            *shortest_trajectory_pair->first.trajectory,
-            config.velocity_scaling_factor,
-            config.acceleration_scaling_factor);
-    }
-
-    if (!time_param_success)
-    {
-        RCLCPP_ERROR(logger, "Failed to compute time stamps for the trajectory");
         return false;
     }
 
@@ -162,7 +189,20 @@ bool moveToPoseTarget(
     {
         execution_success = moveit_cpp_ptr->execute(
             planning_components->getPlanningGroupName(), shortest_trajectory_pair->first.trajectory);
-        if (!execution_success)
+        if (execution_success)
+        {
+            // Wait for the execution to complete
+            auto tem = moveit_cpp_ptr->getTrajectoryExecutionManager();
+            bool wait_success = tem->waitForExecution();
+
+            // Check if execution completed successfully
+            if (!wait_success || tem->getLastExecutionStatus() != moveit_controller_manager::ExecutionStatus::SUCCEEDED)
+            {
+                RCLCPP_WARN(logger, "Execution failed to complete successfully.");
+                execution_success = false;
+            }
+        }
+        else
         {
             RCLCPP_WARN(logger, "Execution failed, retrying...");
         }
@@ -179,11 +219,11 @@ bool moveToPoseTarget(
 }
 
 bool moveToJointTarget(
-    const moveit_cpp::MoveItCppPtr& moveit_cpp_ptr,
-    const moveit_cpp::PlanningComponentPtr& planning_components,
-    const std::vector<double>& joint_values,
-    const MovementConfig& config,
-    const rclcpp::Logger& logger)
+    const moveit_cpp::MoveItCppPtr &moveit_cpp_ptr,
+    const moveit_cpp::PlanningComponentPtr &planning_components,
+    const std::vector<double> &joint_values,
+    const MovementConfig &config,
+    const rclcpp::Logger &logger)
 {
     // Set the start state to the current state
     planning_components->setStartStateToCurrentState();
@@ -226,35 +266,12 @@ bool moveToJointTarget(
     // Select the shortest trajectory
     auto shortest_trajectory_pair = std::min_element(
         trajectories.begin(), trajectories.end(),
-        [](const auto& a, const auto& b) { return a.second < b.second; });
+        [](const auto &a, const auto &b)
+        { return a.second < b.second; });
 
-    // Apply time parameterization based on smoothing_type
-    bool time_param_success = false;
-    if (config.smoothing_type == "time_optimal")
+    // Apply time parameterization
+    if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
     {
-        trajectory_processing::TimeOptimalTrajectoryGeneration time_param;
-        time_param_success = time_param.computeTimeStamps(*shortest_trajectory_pair->first.trajectory,
-                                                          config.velocity_scaling_factor,
-                                                          config.acceleration_scaling_factor);
-    }
-    else if (config.smoothing_type == "iterative")
-    {
-        trajectory_processing::IterativeSplineParameterization time_param;
-        time_param_success = time_param.computeTimeStamps(*shortest_trajectory_pair->first.trajectory,
-                                                          config.velocity_scaling_factor,
-                                                          config.acceleration_scaling_factor);
-    }
-    else
-    {
-        time_param_success = trajectory_processing::RuckigSmoothing::applySmoothing(
-            *shortest_trajectory_pair->first.trajectory,
-            config.velocity_scaling_factor,
-            config.acceleration_scaling_factor);
-    }
-
-    if (!time_param_success)
-    {
-        RCLCPP_ERROR(logger, "Failed to compute time stamps for the trajectory");
         return false;
     }
 
@@ -265,7 +282,20 @@ bool moveToJointTarget(
     {
         execution_success = moveit_cpp_ptr->execute(
             planning_components->getPlanningGroupName(), shortest_trajectory_pair->first.trajectory);
-        if (!execution_success)
+        if (execution_success)
+        {
+            // Wait for the execution to complete
+            auto tem = moveit_cpp_ptr->getTrajectoryExecutionManager();
+            bool wait_success = tem->waitForExecution();
+
+            // Check if execution completed successfully
+            if (!wait_success || tem->getLastExecutionStatus() != moveit_controller_manager::ExecutionStatus::SUCCEEDED)
+            {
+                RCLCPP_WARN(logger, "Execution failed to complete successfully.");
+                execution_success = false;
+            }
+        }
+        else
         {
             RCLCPP_WARN(logger, "Execution failed, retrying...");
         }
@@ -282,11 +312,11 @@ bool moveToJointTarget(
 }
 
 bool moveToNamedTarget(
-    const moveit_cpp::MoveItCppPtr& moveit_cpp_ptr,
-    const moveit_cpp::PlanningComponentPtr& planning_components,
-    const std::string& target_name,
-    const MovementConfig& config,
-    const rclcpp::Logger& logger)
+    const moveit_cpp::MoveItCppPtr &moveit_cpp_ptr,
+    const moveit_cpp::PlanningComponentPtr &planning_components,
+    const std::string &target_name,
+    const MovementConfig &config,
+    const rclcpp::Logger &logger)
 {
     // Set the start state to the current state
     planning_components->setStartStateToCurrentState();
@@ -324,35 +354,12 @@ bool moveToNamedTarget(
     // Select the shortest trajectory
     auto shortest_trajectory_pair = std::min_element(
         trajectories.begin(), trajectories.end(),
-        [](const auto& a, const auto& b) { return a.second < b.second; });
+        [](const auto &a, const auto &b)
+        { return a.second < b.second; });
 
-    // Apply time parameterization based on smoothing_type
-    bool time_param_success = false;
-    if (config.smoothing_type == "time_optimal")
+    // Apply time parameterization
+    if (!applyTimeParameterization(shortest_trajectory_pair->first.trajectory, config, logger))
     {
-        trajectory_processing::TimeOptimalTrajectoryGeneration time_param;
-        time_param_success = time_param.computeTimeStamps(*shortest_trajectory_pair->first.trajectory,
-                                                          config.velocity_scaling_factor,
-                                                          config.acceleration_scaling_factor);
-    }
-    else if (config.smoothing_type == "iterative")
-    {
-        trajectory_processing::IterativeSplineParameterization time_param;
-        time_param_success = time_param.computeTimeStamps(*shortest_trajectory_pair->first.trajectory,
-                                                          config.velocity_scaling_factor,
-                                                          config.acceleration_scaling_factor);
-    }
-    else
-    {
-        time_param_success = trajectory_processing::RuckigSmoothing::applySmoothing(
-            *shortest_trajectory_pair->first.trajectory,
-            config.velocity_scaling_factor,
-            config.acceleration_scaling_factor);
-    }
-
-    if (!time_param_success)
-    {
-        RCLCPP_ERROR(logger, "Failed to compute time stamps for the trajectory");
         return false;
     }
 
@@ -363,7 +370,20 @@ bool moveToNamedTarget(
     {
         execution_success = moveit_cpp_ptr->execute(
             planning_components->getPlanningGroupName(), shortest_trajectory_pair->first.trajectory);
-        if (!execution_success)
+        if (execution_success)
+        {
+            // Wait for the execution to complete
+            auto tem = moveit_cpp_ptr->getTrajectoryExecutionManager();
+            bool wait_success = tem->waitForExecution();
+
+            // Check if execution completed successfully
+            if (!wait_success || tem->getLastExecutionStatus() != moveit_controller_manager::ExecutionStatus::SUCCEEDED)
+            {
+                RCLCPP_WARN(logger, "Execution failed to complete successfully.");
+                execution_success = false;
+            }
+        }
+        else
         {
             RCLCPP_WARN(logger, "Execution failed, retrying...");
         }
@@ -380,20 +400,20 @@ bool moveToNamedTarget(
 }
 
 bool moveCartesianPath(
-    const moveit_cpp::MoveItCppPtr& moveit_cpp_ptr,
-    const moveit_cpp::PlanningComponentPtr& planning_components,
-    const std::vector<geometry_msgs::msg::Pose>& waypoints,
-    const MovementConfig& config,
-    const rclcpp::Logger& logger,
+    const moveit_cpp::MoveItCppPtr &moveit_cpp_ptr,
+    const moveit_cpp::PlanningComponentPtr &planning_components,
+    const std::vector<geometry_msgs::msg::Pose> &waypoints,
+    const MovementConfig &config,
+    const rclcpp::Logger &logger,
     const double linear_success_tolerance = 0.99,
-    const std::string& TCP_FRAME = "link_tcp")
+    const std::string &TCP_FRAME = "link_tcp")
 {
     // Get the robot model and joint model group
     auto robot_model_ptr = moveit_cpp_ptr->getRobotModel();
     auto joint_model_group_ptr = robot_model_ptr->getJointModelGroup(planning_components->getPlanningGroupName());
 
     // Specify the end-effector link name
-    const moveit::core::LinkModel* link_model = robot_model_ptr->getLinkModel(TCP_FRAME);
+    const moveit::core::LinkModel *link_model = robot_model_ptr->getLinkModel(TCP_FRAME);
 
     std::vector<std::pair<robot_trajectory::RobotTrajectoryPtr, double>> trajectories;
     int attempts = 0;
@@ -408,7 +428,7 @@ bool moveCartesianPath(
 
         // Convert waypoints to EigenSTL::vector_Isometry3d
         EigenSTL::vector_Isometry3d waypoints_eigen;
-        for (const auto& pose_msg : waypoints)
+        for (const auto &pose_msg : waypoints)
         {
             Eigen::Isometry3d pose_eigen;
             tf2::fromMsg(pose_msg, pose_eigen);
@@ -420,8 +440,8 @@ bool moveCartesianPath(
 
         // Define the validity callback
         moveit::core::GroupStateValidityCallbackFn validity_callback =
-            [moveit_cpp_ptr](moveit::core::RobotState* state, const moveit::core::JointModelGroup* group,
-                             const double* joint_group_variable_values)
+            [moveit_cpp_ptr](moveit::core::RobotState *state, const moveit::core::JointModelGroup *group,
+                             const double *joint_group_variable_values)
         {
             state->setJointGroupPositions(group, joint_group_variable_values);
             state->update();
@@ -465,35 +485,12 @@ bool moveCartesianPath(
     // Select the shortest trajectory
     auto shortest_trajectory_pair = std::min_element(
         trajectories.begin(), trajectories.end(),
-        [](const auto& a, const auto& b) { return a.second < b.second; });
+        [](const auto &a, const auto &b)
+        { return a.second < b.second; });
 
-    // Apply time parameterization based on smoothing_type
-    bool time_param_success = false;
-    if (config.smoothing_type == "time_optimal")
+    // Apply time parameterization
+    if (!applyTimeParameterization(shortest_trajectory_pair->first, config, logger))
     {
-        trajectory_processing::TimeOptimalTrajectoryGeneration time_param;
-        time_param_success = time_param.computeTimeStamps(*shortest_trajectory_pair->first,
-                                                          config.velocity_scaling_factor,
-                                                          config.acceleration_scaling_factor);
-    }
-    else if (config.smoothing_type == "iterative")
-    {
-        trajectory_processing::IterativeSplineParameterization time_param;
-        time_param_success = time_param.computeTimeStamps(*shortest_trajectory_pair->first,
-                                                          config.velocity_scaling_factor,
-                                                          config.acceleration_scaling_factor);
-    }
-    else
-    {
-        time_param_success = trajectory_processing::RuckigSmoothing::applySmoothing(
-            *shortest_trajectory_pair->first,
-            config.velocity_scaling_factor,
-            config.acceleration_scaling_factor);
-    }
-
-    if (!time_param_success)
-    {
-        RCLCPP_ERROR(logger, "Failed to compute time stamps for the trajectory");
         return false;
     }
 
@@ -504,7 +501,20 @@ bool moveCartesianPath(
     {
         execution_success = moveit_cpp_ptr->execute(
             planning_components->getPlanningGroupName(), shortest_trajectory_pair->first);
-        if (!execution_success)
+        if (execution_success)
+        {
+            // Wait for the execution to complete
+            auto tem = moveit_cpp_ptr->getTrajectoryExecutionManager();
+            bool wait_success = tem->waitForExecution();
+
+            // Check if execution completed successfully
+            if (!wait_success || tem->getLastExecutionStatus() != moveit_controller_manager::ExecutionStatus::SUCCEEDED)
+            {
+                RCLCPP_WARN(logger, "Execution failed to complete successfully.");
+                execution_success = false;
+            }
+        }
+        else
         {
             RCLCPP_WARN(logger, "Execution failed, retrying...");
         }
@@ -520,7 +530,7 @@ bool moveCartesianPath(
     return true;
 }
 
-int main(int argc, char** argv)
+int main(int argc, char **argv)
 {
     // Initialize ROS and create the Node
     rclcpp::init(argc, argv);
@@ -535,7 +545,8 @@ int main(int argc, char** argv)
     // We spin up a SingleThreadedExecutor so MoveItVisualTools interact with ROS
     rclcpp::executors::SingleThreadedExecutor executor;
     executor.add_node(node);
-    auto spinner = std::thread([&executor]() { executor.spin(); });
+    auto spinner = std::thread([&executor]()
+                               { executor.spin(); });
 
     // Get parameters
     std::string robot_type;
@@ -549,7 +560,7 @@ int main(int argc, char** argv)
     node->get_parameter_or<double>("velocity_scaling_factor", std_move_config.velocity_scaling_factor, 0.9);
     node->get_parameter_or<double>("acceleration_scaling_factor", std_move_config.acceleration_scaling_factor, 0.9);
     node->get_parameter_or<int>("max_retries", std_move_config.max_retries, 5);
-    node->get_parameter_or<std::string>("smoothing_type", std_move_config.smoothing_type, "time_optimal");
+    node->get_parameter_or<std::string>("smoothing_type", std_move_config.smoothing_type, "iterative_parabolic");
     node->get_parameter_or<double>("step_size", std_move_config.step_size, 0.05);
     node->get_parameter_or<double>("jump_threshold", std_move_config.jump_threshold, 0.0);
     node->get_parameter_or<int>("plan_number_target", std_move_config.plan_number_target, 12);
@@ -566,8 +577,12 @@ int main(int argc, char** argv)
     // Create the PlanningComponent
     auto planning_components = std::make_shared<moveit_cpp::PlanningComponent>(robot_type, moveit_cpp_ptr);
 
+    RCLCPP_INFO_STREAM(LOGGER, "Set smoothing type: " << std_move_config.smoothing_type);
+    rclcpp::sleep_for(std::chrono::seconds(1));
+
     // Create a collision object for the robot to avoid
-    auto collision_object = [BASE_FRAME]() {
+    auto collision_object = [BASE_FRAME]()
+    {
         moveit_msgs::msg::CollisionObject collision_object;
         collision_object.header.frame_id = BASE_FRAME;
         collision_object.id = "box1";
@@ -601,7 +616,8 @@ int main(int argc, char** argv)
     }
 
     // Set a target Pose
-    auto approach_pose = []() {
+    auto approach_pose = []()
+    {
         geometry_msgs::msg::Pose msg;
         msg.orientation.x = 1.0;
         msg.orientation.y = 0.0;
