@@ -405,8 +405,8 @@ bool moveCartesianPath(
     const std::vector<geometry_msgs::msg::Pose> &waypoints,
     const MovementConfig &config,
     const rclcpp::Logger &logger,
-    const double linear_success_tolerance = 0.99,
-    const std::string &TCP_FRAME = "link_tcp")
+    const std::string &TCP_FRAME,
+    const double linear_success_tolerance = 0.99)
 {
     // Get the robot model and joint model group
     auto robot_model_ptr = moveit_cpp_ptr->getRobotModel();
@@ -661,13 +661,13 @@ int main(int argc, char **argv)
     // Move to Cartesian path (grasp)
     do
     {
-        result = moveCartesianPath(moveit_cpp_ptr, planning_components, grasp_waypoints, slow_move_config, logger, 0.99, TCP_FRAME);
+        result = moveCartesianPath(moveit_cpp_ptr, planning_components, grasp_waypoints, slow_move_config, logger, TCP_FRAME);
     } while (!result);
 
     // Retract to Cartesian path (approach)
     do
     {
-        result = moveCartesianPath(moveit_cpp_ptr, planning_components, approach_waypoints, slow_move_config, logger, 0.99, TCP_FRAME);
+        result = moveCartesianPath(moveit_cpp_ptr, planning_components, approach_waypoints, slow_move_config, logger, TCP_FRAME);
     } while (!result);
 
     // Move to named target ("home")
