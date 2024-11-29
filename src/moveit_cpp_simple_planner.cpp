@@ -556,19 +556,23 @@ int main(int argc, char **argv)
     std::string TCP_FRAME;
     node->get_parameter_or<std::string>("tcp_frame", TCP_FRAME, "link_tcp");
 
-    MovementConfig std_move_config;
-    node->get_parameter_or<double>("velocity_scaling_factor", std_move_config.velocity_scaling_factor, 0.9);
-    node->get_parameter_or<double>("acceleration_scaling_factor", std_move_config.acceleration_scaling_factor, 0.9);
-    node->get_parameter_or<int>("max_retries", std_move_config.max_retries, 5);
-    node->get_parameter_or<std::string>("smoothing_type", std_move_config.smoothing_type, "iterative_parabolic");
-    node->get_parameter_or<double>("step_size", std_move_config.step_size, 0.05);
-    node->get_parameter_or<double>("jump_threshold", std_move_config.jump_threshold, 0.0);
-    node->get_parameter_or<int>("plan_number_target", std_move_config.plan_number_target, 12);
-    node->get_parameter_or<int>("plan_number_limit", std_move_config.plan_number_limit, 32);
+    MovementConfig max_move_config;
+    node->get_parameter_or<double>("velocity_scaling_factor", max_move_config.velocity_scaling_factor, 0.5);
+    node->get_parameter_or<double>("acceleration_scaling_factor", max_move_config.acceleration_scaling_factor, 0.5);
+    node->get_parameter_or<int>("max_retries", max_move_config.max_retries, 5);
+    node->get_parameter_or<std::string>("smoothing_type", max_move_config.smoothing_type, "iterative_parabolic");
+    node->get_parameter_or<double>("step_size", max_move_config.step_size, 0.05);
+    node->get_parameter_or<double>("jump_threshold", max_move_config.jump_threshold, 0.0);
+    node->get_parameter_or<int>("plan_number_target", max_move_config.plan_number_target, 12);
+    node->get_parameter_or<int>("plan_number_limit", max_move_config.plan_number_limit, 32);
 
-    MovementConfig slow_move_config = std_move_config;
-    slow_move_config.velocity_scaling_factor = 0.1;
-    slow_move_config.acceleration_scaling_factor = 0.1;
+    MovementConfig mid_move_config = max_move_config;
+    mid_move_config.velocity_scaling_factor = max_move_config.velocity_scaling_factor / 2.0;
+    mid_move_config.acceleration_scaling_factor = max_move_config.acceleration_scaling_factor / 2.0;
+
+    MovementConfig slow_move_config = max_move_config;
+    slow_move_config.velocity_scaling_factor = max_move_config.velocity_scaling_factor / 4.0;
+    slow_move_config.acceleration_scaling_factor = max_move_config.acceleration_scaling_factor / 4.0;
 
     // Create the MoveItCpp instance
     auto moveit_cpp_ptr = std::make_shared<moveit_cpp::MoveItCpp>(node);
@@ -577,7 +581,7 @@ int main(int argc, char **argv)
     // Create the PlanningComponent
     auto planning_components = std::make_shared<moveit_cpp::PlanningComponent>(robot_type, moveit_cpp_ptr);
 
-    RCLCPP_INFO_STREAM(LOGGER, "Set smoothing type: " << std_move_config.smoothing_type);
+    RCLCPP_INFO_STREAM(LOGGER, "Set smoothing type: " << max_move_config.smoothing_type);
     // rclcpp::sleep_for(std::chrono::seconds(1));
 
     // Create a collision object for the robot to avoid
@@ -649,13 +653,13 @@ int main(int argc, char **argv)
     // Move to joint target
     do
     {
-        result = moveToJointTarget(moveit_cpp_ptr, planning_components, ready_joint_values, std_move_config, logger);
+        result = moveToJointTarget(moveit_cpp_ptr, planning_components, ready_joint_values, max_move_config, logger);
     } while (!result);
 
     // Move to pose target
     do
     {
-        result = moveToPoseTarget(moveit_cpp_ptr, planning_components, approach_pose, std_move_config, logger, BASE_FRAME, TCP_FRAME);
+        result = moveToPoseTarget(moveit_cpp_ptr, planning_components, approach_pose, mid_move_config, logger, BASE_FRAME, TCP_FRAME);
     } while (!result);
 
     // Move to Cartesian path (grasp)
@@ -667,13 +671,13 @@ int main(int argc, char **argv)
     // Retract to Cartesian path (approach)
     do
     {
-        result = moveCartesianPath(moveit_cpp_ptr, planning_components, approach_waypoints, slow_move_config, logger, TCP_FRAME);
+        result = moveCartesianPath(moveit_cpp_ptr, planning_components, approach_waypoints, mid_move_config, logger, TCP_FRAME);
     } while (!result);
 
     // Move to named target ("home")
     do
     {
-        result = moveToNamedTarget(moveit_cpp_ptr, planning_components, "home", std_move_config, logger);
+        result = moveToNamedTarget(moveit_cpp_ptr, planning_components, "home", max_move_config, logger);
     } while (!result);
 
     // Shutdown ROS
