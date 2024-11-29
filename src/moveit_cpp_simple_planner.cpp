@@ -578,7 +578,7 @@ int main(int argc, char **argv)
     auto planning_components = std::make_shared<moveit_cpp::PlanningComponent>(robot_type, moveit_cpp_ptr);
 
     RCLCPP_INFO_STREAM(LOGGER, "Set smoothing type: " << std_move_config.smoothing_type);
-    rclcpp::sleep_for(std::chrono::seconds(1));
+    // rclcpp::sleep_for(std::chrono::seconds(1));
 
     // Create a collision object for the robot to avoid
     auto collision_object = [BASE_FRAME]()
