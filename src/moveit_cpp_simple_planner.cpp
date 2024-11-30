@@ -43,8 +43,36 @@ struct MovementConfig
     std::string smoothing_type = "iterative_parabolic";
 };
 
-// Compute the length of a trajectory
-double computePathLength(const robot_trajectory::RobotTrajectory &trajectory, const std::string &tcp_frame)
+// Compute the length of a trajectory considering joint movements
+double computeJointPathLength(const robot_trajectory::RobotTrajectory &trajectory)
+{
+    double total_length = 0.0;
+    const size_t waypoint_count = trajectory.getWayPointCount();
+
+    for (size_t i = 1; i < waypoint_count; ++i)
+    {
+        const moveit::core::RobotState &prev_state = trajectory.getWayPoint(i - 1);
+        const moveit::core::RobotState &curr_state = trajectory.getWayPoint(i);
+
+        std::vector<double> prev_positions;
+        std::vector<double> curr_positions;
+        prev_state.copyJointGroupPositions(trajectory.getGroupName(), prev_positions);
+        curr_state.copyJointGroupPositions(trajectory.getGroupName(), curr_positions);
+
+        double segment_length = 0.0;
+        for (size_t j = 0; j < prev_positions.size(); ++j)
+        {
+            double diff = curr_positions[j] - prev_positions[j];
+            segment_length += diff * diff;
+        }
+        total_length += std::sqrt(segment_length);
+    }
+
+    return total_length;
+}
+
+// Compute the length of a trajectory considering TCP linear movements
+double computeCartesianPathLength(const robot_trajectory::RobotTrajectory &trajectory, const std::string &tcp_frame)
 {
     double total_length = 0.0;
     const size_t waypoint_count = trajectory.getWayPointCount();
@@ -60,6 +88,40 @@ double computePathLength(const robot_trajectory::RobotTrajectory &trajectory, co
         double distance = (curr_pose.translation() - prev_pose.translation()).norm();
         total_length += distance;
     }
+
+    return total_length;
+}
+
+// Compute the length of a trajectory considering joint movements
+double computePathLength(const robot_trajectory::RobotTrajectory &trajectory, const std::string &tcp_frame)
+{
+    // 
+    // // Create a Clock object using System Time
+    // rclcpp::Clock clock(RCL_ROS_TIME);
+
+    // rclcpp::Time now = clock.now();
+    // double timestamp = now.seconds();
+
+    double joint_length = computeJointPathLength(trajectory);
+
+    // double joint_time = timestamp;
+    // now = clock.now();
+    // timestamp = now.seconds();
+    // joint_time = timestamp - joint_time;
+
+    double cartesian_length = computeCartesianPathLength(trajectory, tcp_frame);
+
+    // double cartesian_time = timestamp;
+    // now = clock.now();
+    // timestamp = now.seconds();
+    // cartesian_time = timestamp - cartesian_time;
+
+    // RCLCPP_INFO_STREAM(logger, "Joint lenght: " << joint_length / 2 << ", computational time: " << joint_time);
+    // RCLCPP_INFO_STREAM(logger, "Cartesian lenght: " << 2 * cartesian_length << ", computational time: " << cartesian_time);
+
+    double total_length = (2 * cartesian_length + joint_length / 2);
+
+    // RCLCPP_INFO_STREAM(logger, "Path lenght: " << total_length);
 
     return total_length;
 }
@@ -163,7 +225,7 @@ bool applyTimeParameterization(
             // Adjust scaling factors proportionally
             double scaling_factor = config.max_cartesian_speed / max_cartesian_speed_achieved;
             velocity_scaling_factor *= scaling_factor;
-            acceleration_scaling_factor *= scaling_factor;
+            acceleration_scaling_factor = ((acceleration_scaling_factor * scaling_factor) + acceleration_scaling_factor) / 2.0;
 
             RCLCPP_WARN(logger, "Adjusted scaling factors to limit Cartesian speed: velocity_scaling_factor=%.3f, acceleration_scaling_factor=%.3f",
                         velocity_scaling_factor, acceleration_scaling_factor);
@@ -217,9 +279,9 @@ bool moveToPoseTarget(
     const moveit_cpp::PlanningComponentPtr &planning_components,
     const geometry_msgs::msg::Pose &target_pose,
     const MovementConfig &config,
-    const rclcpp::Logger &logger,
     const std::string &BASE_FRAME,
-    const std::string &TCP_FRAME)
+    const std::string &TCP_FRAME,
+    const rclcpp::Logger &logger)
 {
     // Create a PoseStamped with the target pose
     geometry_msgs::msg::PoseStamped pose_stamped;
@@ -442,8 +504,8 @@ bool moveCartesianPath(
     const moveit_cpp::PlanningComponentPtr &planning_components,
     const std::vector<geometry_msgs::msg::Pose> &waypoints,
     const MovementConfig &config,
-    const rclcpp::Logger &logger,
     const std::string &TCP_FRAME,
+    const rclcpp::Logger &logger,
     const double linear_success_tolerance = 0.99)
 {
     int retry_count = 0;
@@ -699,21 +761,21 @@ int main(int argc, char **argv)
     // Move to pose target
     do
     {
-        result = moveToPoseTarget(moveit_cpp_ptr, planning_components, approach_pose, mid_move_config, logger, BASE_FRAME, TCP_FRAME);
+        result = moveToPoseTarget(moveit_cpp_ptr, planning_components, approach_pose, mid_move_config, BASE_FRAME, TCP_FRAME, logger);
         counter++;
     } while ((!result) && (counter < 16));
 
     // Move to Cartesian path (grasp)
     do
     {
-        result = moveCartesianPath(moveit_cpp_ptr, planning_components, grasp_waypoints, slow_move_config, logger, TCP_FRAME);
+        result = moveCartesianPath(moveit_cpp_ptr, planning_components, grasp_waypoints, slow_move_config, TCP_FRAME, logger);
         counter++;
     } while ((!result) && (counter < 16));
 
     // Retract to Cartesian path (approach)
     do
     {
-        result = moveCartesianPath(moveit_cpp_ptr, planning_components, approach_waypoints, mid_move_config, logger, TCP_FRAME);
+        result = moveCartesianPath(moveit_cpp_ptr, planning_components, approach_waypoints, mid_move_config, TCP_FRAME, logger);
         counter++;
     } while ((!result) && (counter < 16));
 
