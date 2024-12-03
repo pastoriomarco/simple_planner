@@ -95,7 +95,7 @@ double computeCartesianPathLength(const robot_trajectory::RobotTrajectory &traje
 // Compute the length of a trajectory considering joint movements
 double computePathLength(const robot_trajectory::RobotTrajectory &trajectory, const std::string &tcp_frame)
 {
-    // 
+    //
     // // Create a Clock object using System Time
     // rclcpp::Clock clock(RCL_ROS_TIME);
 
@@ -664,127 +664,153 @@ int main(int argc, char **argv)
 
     // Create the MoveItCpp instance
     auto moveit_cpp_ptr = std::make_shared<moveit_cpp::MoveItCpp>(node);
-    moveit_cpp_ptr->getPlanningSceneMonitor()->providePlanningSceneService();
+    // moveit_cpp_ptr->getPlanningSceneMonitor()->providePlanningSceneService();
+    moveit_cpp_ptr->getPlanningSceneMonitor()->requestPlanningSceneState();
 
-    // Create the PlanningComponent
-    auto planning_components = std::make_shared<moveit_cpp::PlanningComponent>(robot_type, moveit_cpp_ptr);
+    auto my_planning_scene = moveit_cpp_ptr->getPlanningSceneMonitor()->getPlanningScene();
 
-    RCLCPP_INFO_STREAM(logger, "Set smoothing type: " << max_move_config.smoothing_type);
-    auto robot_model = moveit_cpp_ptr->getRobotModel();
-    auto joint_model_group = robot_model->getJointModelGroup(planning_components->getPlanningGroupName());
-    const std::vector<std::string> &joint_names = joint_model_group->getActiveJointModelNames();
-
-    for (const auto &joint_name : joint_names)
+    if (my_planning_scene)
     {
-        const auto &joint_model = robot_model->getJointModel(joint_name);
-        const auto &bounds = joint_model->getVariableBounds(joint_name);
+        RCLCPP_INFO(logger, "-----");
+        RCLCPP_INFO(logger, "PlanningSceneMonitor is active and has a PlanningScene.");
+        RCLCPP_INFO(logger, "-----");
 
-        RCLCPP_INFO(logger, "Joint '%s': max_velocity=%f, max_acceleration=%f",
-                    joint_name.c_str(), bounds.max_velocity_, bounds.max_acceleration_);
+        std::vector<moveit_msgs::msg::CollisionObject> collision_objs;
+        my_planning_scene->getCollisionObjectMsgs(collision_objs);
+
+        RCLCPP_INFO(logger, "-----");
+        RCLCPP_INFO_STREAM(logger, "Collision objs: " << collision_objs.size());
+        RCLCPP_INFO(logger, "-----");
+
+        for (auto obj : collision_objs)
+        {
+            RCLCPP_INFO_STREAM(logger, "Collision objs ID: " << obj.id);
+        }
     }
-    // rclcpp::sleep_for(std::chrono::seconds(1));
-
-    // Create a collision object for the robot to avoid
-    auto collision_object = [BASE_FRAME]()
+    else
     {
-        moveit_msgs::msg::CollisionObject collision_object;
-        collision_object.header.frame_id = BASE_FRAME;
-        collision_object.id = "box1";
-
-        shape_msgs::msg::SolidPrimitive primitive;
-        // Define size of box
-        primitive.type = primitive.BOX;
-        primitive.dimensions.resize(3);
-        primitive.dimensions[primitive.BOX_X] = 0.5;
-        primitive.dimensions[primitive.BOX_Y] = 0.05;
-        primitive.dimensions[primitive.BOX_Z] = 0.3;
-
-        // Define pose of box (relative to frame_id)
-        geometry_msgs::msg::Pose box_pose;
-        box_pose.orientation.w = 1.0;
-        box_pose.position.x = 0.15;
-        box_pose.position.y = 0.2;
-        box_pose.position.z = 0.15;
-
-        collision_object.primitives.push_back(primitive);
-        collision_object.primitive_poses.push_back(box_pose);
-        collision_object.operation = collision_object.ADD;
-
-        return collision_object;
-    }();
-
-    {
-        // Add object to planning scene
-        planning_scene_monitor::LockedPlanningSceneRW scene(moveit_cpp_ptr->getPlanningSceneMonitor());
-        scene->processCollisionObjectMsg(collision_object);
+        RCLCPP_WARN(logger, "PlanningSceneMonitor does not have a valid PlanningScene.");
     }
 
-    // Set a target Pose
-    auto approach_pose = []()
-    {
-        geometry_msgs::msg::Pose msg;
-        msg.orientation.x = 1.0;
-        msg.orientation.y = 0.0;
-        msg.orientation.z = 0.0;
-        msg.orientation.w = 0.0;
-        msg.position.x = 0.1;
-        msg.position.y = 0.3;
-        msg.position.z = 0.2;
-        return msg;
-    }();
+    // // Create the PlanningComponent
+    // auto planning_components = std::make_shared<moveit_cpp::PlanningComponent>(robot_type, moveit_cpp_ptr);
 
-    // Define waypoints for Cartesian path
-    std::vector<geometry_msgs::msg::Pose> grasp_waypoints;
-    std::vector<geometry_msgs::msg::Pose> approach_waypoints;
+    // RCLCPP_INFO_STREAM(logger, "Set smoothing type: " << max_move_config.smoothing_type);
+    // auto robot_model = moveit_cpp_ptr->getRobotModel();
+    // auto joint_model_group = robot_model->getJointModelGroup(planning_components->getPlanningGroupName());
+    // const std::vector<std::string> &joint_names = joint_model_group->getActiveJointModelNames();
 
-    // Target pose (straight-line path)
-    geometry_msgs::msg::Pose grasp_pose = approach_pose;
-    grasp_pose.position.z -= 0.05; // Move 5 cm along Z-axis
-    grasp_waypoints.push_back(grasp_pose);
+    // for (const auto &joint_name : joint_names)
+    // {
+    //     const auto &joint_model = robot_model->getJointModel(joint_name);
+    //     const auto &bounds = joint_model->getVariableBounds(joint_name);
 
-    approach_waypoints.push_back(approach_pose);
+    //     RCLCPP_INFO(logger, "Joint '%s': max_velocity=%f, max_acceleration=%f",
+    //                 joint_name.c_str(), bounds.max_velocity_, bounds.max_acceleration_);
+    // }
+    // // rclcpp::sleep_for(std::chrono::seconds(1));
 
-    // Joint target
-    std::vector<double> ready_joint_values = {0.0, 0.0, 1.57, 0.0, 0.0, 0.0};
+    // // Create a collision object for the robot to avoid
+    // auto collision_object = [BASE_FRAME]()
+    // {
+    //     moveit_msgs::msg::CollisionObject collision_object;
+    //     collision_object.header.frame_id = BASE_FRAME;
+    //     collision_object.id = "box1";
 
-    // MOVEMENTS SEQUENCE
-    bool result = false;
-    int counter = 0;
+    //     shape_msgs::msg::SolidPrimitive primitive;
+    //     // Define size of box
+    //     primitive.type = primitive.BOX;
+    //     primitive.dimensions.resize(3);
+    //     primitive.dimensions[primitive.BOX_X] = 0.5;
+    //     primitive.dimensions[primitive.BOX_Y] = 0.05;
+    //     primitive.dimensions[primitive.BOX_Z] = 0.3;
 
-    // Move to joint target
-    do
-    {
-        result = moveToJointTarget(moveit_cpp_ptr, planning_components, ready_joint_values, max_move_config, TCP_FRAME, logger);
-        counter++;
-    } while ((!result) && (counter < 16));
+    //     // Define pose of box (relative to frame_id)
+    //     geometry_msgs::msg::Pose box_pose;
+    //     box_pose.orientation.w = 1.0;
+    //     box_pose.position.x = 0.15;
+    //     box_pose.position.y = 0.2;
+    //     box_pose.position.z = 0.15;
 
-    // Move to pose target
-    do
-    {
-        result = moveToPoseTarget(moveit_cpp_ptr, planning_components, approach_pose, mid_move_config, BASE_FRAME, TCP_FRAME, logger);
-        counter++;
-    } while ((!result) && (counter < 16));
+    //     collision_object.primitives.push_back(primitive);
+    //     collision_object.primitive_poses.push_back(box_pose);
+    //     collision_object.operation = collision_object.ADD;
 
-    // Move to Cartesian path (grasp)
-    do
-    {
-        result = moveCartesianPath(moveit_cpp_ptr, planning_components, grasp_waypoints, slow_move_config, TCP_FRAME, logger);
-        counter++;
-    } while ((!result) && (counter < 16));
+    //     return collision_object;
+    // }();
 
-    // Retract to Cartesian path (approach)
-    do
-    {
-        result = moveCartesianPath(moveit_cpp_ptr, planning_components, approach_waypoints, mid_move_config, TCP_FRAME, logger);
-        counter++;
-    } while ((!result) && (counter < 16));
+    // {
+    //     // Add object to planning scene
+    //     planning_scene_monitor::LockedPlanningSceneRW scene(moveit_cpp_ptr->getPlanningSceneMonitor());
+    //     scene->processCollisionObjectMsg(collision_object);
+    // }
 
-    // Move to named target ("home")
-    do
-    {
-        result = moveToNamedTarget(moveit_cpp_ptr, planning_components, "home", max_move_config, TCP_FRAME, logger);
-        counter++;
-    } while ((!result) && (counter < 16));
+    // // Set a target Pose
+    // auto approach_pose = []()
+    // {
+    //     geometry_msgs::msg::Pose msg;
+    //     msg.orientation.x = 1.0;
+    //     msg.orientation.y = 0.0;
+    //     msg.orientation.z = 0.0;
+    //     msg.orientation.w = 0.0;
+    //     msg.position.x = 0.1;
+    //     msg.position.y = 0.3;
+    //     msg.position.z = 0.2;
+    //     return msg;
+    // }();
+
+    // // Define waypoints for Cartesian path
+    // std::vector<geometry_msgs::msg::Pose> grasp_waypoints;
+    // std::vector<geometry_msgs::msg::Pose> approach_waypoints;
+
+    // // Target pose (straight-line path)
+    // geometry_msgs::msg::Pose grasp_pose = approach_pose;
+    // grasp_pose.position.z -= 0.05; // Move 5 cm along Z-axis
+    // grasp_waypoints.push_back(grasp_pose);
+
+    // approach_waypoints.push_back(approach_pose);
+
+    // // Joint target
+    // std::vector<double> ready_joint_values = {0.0, 0.0, 1.57, 0.0, 0.0, 0.0};
+
+    // // MOVEMENTS SEQUENCE
+    // bool result = false;
+    // int counter = 0;
+
+    // // Move to joint target
+    // do
+    // {
+    //     result = moveToJointTarget(moveit_cpp_ptr, planning_components, ready_joint_values, max_move_config, TCP_FRAME, logger);
+    //     counter++;
+    // } while ((!result) && (counter < 16));
+
+    // // Move to pose target
+    // do
+    // {
+    //     result = moveToPoseTarget(moveit_cpp_ptr, planning_components, approach_pose, mid_move_config, BASE_FRAME, TCP_FRAME, logger);
+    //     counter++;
+    // } while ((!result) && (counter < 16));
+
+    // // Move to Cartesian path (grasp)
+    // do
+    // {
+    //     result = moveCartesianPath(moveit_cpp_ptr, planning_components, grasp_waypoints, slow_move_config, TCP_FRAME, logger);
+    //     counter++;
+    // } while ((!result) && (counter < 16));
+
+    // // Retract to Cartesian path (approach)
+    // do
+    // {
+    //     result = moveCartesianPath(moveit_cpp_ptr, planning_components, approach_waypoints, mid_move_config, TCP_FRAME, logger);
+    //     counter++;
+    // } while ((!result) && (counter < 16));
+
+    // // Move to named target ("home")
+    // do
+    // {
+    //     result = moveToNamedTarget(moveit_cpp_ptr, planning_components, "home", max_move_config, TCP_FRAME, logger);
+    //     counter++;
+    // } while ((!result) && (counter < 16));
 
     // Shutdown ROS
     rclcpp::shutdown();
