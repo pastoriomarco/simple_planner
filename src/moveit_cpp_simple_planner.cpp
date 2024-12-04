@@ -222,7 +222,8 @@ bool applyTimeParameterization(
             // Adjust scaling factors proportionally
             double scaling_factor = config.max_cartesian_speed / max_cartesian_speed_achieved;
             velocity_scaling_factor *= scaling_factor;
-            acceleration_scaling_factor = ((acceleration_scaling_factor * scaling_factor) + acceleration_scaling_factor) / 2.0;
+            acceleration_scaling_factor *= scaling_factor;
+            // acceleration_scaling_factor = ((acceleration_scaling_factor * scaling_factor) + acceleration_scaling_factor) / 2.0;
 
             RCLCPP_WARN(logger, "Adjusted scaling factors to limit Cartesian speed: velocity_scaling_factor=%.3f, acceleration_scaling_factor=%.3f",
                         velocity_scaling_factor, acceleration_scaling_factor);
@@ -820,8 +821,12 @@ int main(int argc, char **argv)
     grasp_waypoints.push_back(grasp_pose);
     approach_waypoints.push_back(approach_pose);
 
-    // Joint target
+    // Joint targets
     std::vector<double> ready_joint_values = {0.0, 0.0, 1.57, 0.0, 0.0, 0.0};
+    std::vector<double> rest_joint_values = {0.0, -0.785, 0.785, 0.0, 0.0, 0.0};
+    std::vector<double> scan_sx_joint_values = {-0.175, -0.419, 1.378, 0.349, 1.535, -0.977};
+    std::vector<double> scan_dx_joint_values = {0.733, -0.297, 1.378, -0.576, 1.692, 1.291};
+    std::vector<double> shutdown_joint_values = {0.0, 0.175, 0.175, 0.0, 0.0, 0.0};
 
     // MOVEMENTS SEQUENCE
     bool result = false;
@@ -830,37 +835,72 @@ int main(int argc, char **argv)
     // Move to joint target
     do
     {
-        result = moveToJointTarget(moveit_cpp_ptr, planning_components, ready_joint_values, max_move_config, TCP_FRAME, logger);
+        result = moveToJointTarget(moveit_cpp_ptr, planning_components, rest_joint_values, mid_move_config, TCP_FRAME, logger);
         counter++;
     } while ((!result) && (counter < 16));
 
-    // Move to pose target
+    // Move to joint target
     do
     {
-        result = moveToPoseTarget(moveit_cpp_ptr, planning_components, approach_pose, mid_move_config, BASE_FRAME, TCP_FRAME, logger);
+        result = moveToJointTarget(moveit_cpp_ptr, planning_components, scan_sx_joint_values, mid_move_config, TCP_FRAME, logger);
         counter++;
     } while ((!result) && (counter < 16));
 
-    // Move to Cartesian path (grasp)
+    // Move to joint target
     do
     {
-        result = moveCartesianPath(moveit_cpp_ptr, planning_components, grasp_waypoints, slow_move_config, TCP_FRAME, logger);
+        result = moveToJointTarget(moveit_cpp_ptr, planning_components, scan_dx_joint_values, mid_move_config, TCP_FRAME, logger);
         counter++;
     } while ((!result) && (counter < 16));
 
-    // Retract to Cartesian path (approach)
+    // Move to joint target
     do
     {
-        result = moveCartesianPath(moveit_cpp_ptr, planning_components, approach_waypoints, mid_move_config, TCP_FRAME, logger);
+        result = moveToJointTarget(moveit_cpp_ptr, planning_components, rest_joint_values, mid_move_config, TCP_FRAME, logger);
         counter++;
     } while ((!result) && (counter < 16));
 
-    // Move to named target ("home")
+    // Move to joint target
     do
     {
-        result = moveToNamedTarget(moveit_cpp_ptr, planning_components, "home", max_move_config, TCP_FRAME, logger);
+        result = moveToJointTarget(moveit_cpp_ptr, planning_components, shutdown_joint_values, mid_move_config, TCP_FRAME, logger);
         counter++;
     } while ((!result) && (counter < 16));
+
+    // // Move to joint target
+    // do
+    // {
+    //     result = moveToJointTarget(moveit_cpp_ptr, planning_components, ready_joint_values, max_move_config, TCP_FRAME, logger);
+    //     counter++;
+    // } while ((!result) && (counter < 16));
+
+    // // Move to pose target
+    // do
+    // {
+    //     result = moveToPoseTarget(moveit_cpp_ptr, planning_components, approach_pose, mid_move_config, BASE_FRAME, TCP_FRAME, logger);
+    //     counter++;
+    // } while ((!result) && (counter < 16));
+
+    // // Move to Cartesian path (grasp)
+    // do
+    // {
+    //     result = moveCartesianPath(moveit_cpp_ptr, planning_components, grasp_waypoints, slow_move_config, TCP_FRAME, logger);
+    //     counter++;
+    // } while ((!result) && (counter < 16));
+
+    // // Retract to Cartesian path (approach)
+    // do
+    // {
+    //     result = moveCartesianPath(moveit_cpp_ptr, planning_components, approach_waypoints, mid_move_config, TCP_FRAME, logger);
+    //     counter++;
+    // } while ((!result) && (counter < 16));
+
+    // // Move to named target ("home")
+    // do
+    // {
+    //     result = moveToNamedTarget(moveit_cpp_ptr, planning_components, "home", max_move_config, TCP_FRAME, logger);
+    //     counter++;
+    // } while ((!result) && (counter < 16));
 
     // Reset shared pointers
     planning_components.reset();
