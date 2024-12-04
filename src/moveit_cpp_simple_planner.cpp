@@ -27,9 +27,6 @@
 // #include <moveit_visual_tools/moveit_visual_tools.h>
 // namespace rvt = rviz_visual_tools;
 
-// Logger
-static const rclcpp::Logger logger = rclcpp::get_logger("moveit_cpp_simple_planner");
-
 struct MovementConfig
 {
     double velocity_scaling_factor = 0.5;
@@ -650,12 +647,15 @@ int main(int argc, char **argv)
     rclcpp::init(argc, argv);
     rclcpp::NodeOptions node_options;
 
-    // Create a ROS logger
-    RCLCPP_INFO(logger, "Initialize node");
-
     // Create the Node
     node_options.automatically_declare_parameters_from_overrides(true);
     rclcpp::Node::SharedPtr node = rclcpp::Node::make_shared("run_moveit_cpp", "", node_options);
+
+    // Logger
+    rclcpp::Logger logger = node->get_logger();
+
+    // Create a ROS logger
+    RCLCPP_INFO(logger, "Initialize node");
 
     // We spin up a SingleThreadedExecutor so MoveItVisualTools interact with ROS
     rclcpp::executors::SingleThreadedExecutor executor;
