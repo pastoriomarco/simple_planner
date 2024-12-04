@@ -222,8 +222,8 @@ bool applyTimeParameterization(
             // Adjust scaling factors proportionally
             double scaling_factor = config.max_cartesian_speed / max_cartesian_speed_achieved;
             velocity_scaling_factor *= scaling_factor;
-            acceleration_scaling_factor *= scaling_factor;
-            // acceleration_scaling_factor = ((acceleration_scaling_factor * scaling_factor) + acceleration_scaling_factor) / 2.0;
+            // acceleration_scaling_factor *= scaling_factor;
+            acceleration_scaling_factor = ((acceleration_scaling_factor * scaling_factor) + acceleration_scaling_factor) / 2.0;
 
             RCLCPP_WARN(logger, "Adjusted scaling factors to limit Cartesian speed: velocity_scaling_factor=%.3f, acceleration_scaling_factor=%.3f",
                         velocity_scaling_factor, acceleration_scaling_factor);
