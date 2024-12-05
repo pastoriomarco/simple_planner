@@ -823,7 +823,7 @@ int main(int argc, char **argv)
 
     // Joint targets
     std::vector<double> ready_joint_values = {0.0, 0.0, 1.57, 0.0, 0.0, 0.0};
-    std::vector<double> rest_joint_values = {0.0, -0.785, 0.785, 0.0, 0.0, 0.0};
+    std::vector<double> rest_joint_values = {0.0, -0.785, 0.785, 0.0, 1.57, 0.0};
     std::vector<double> scan_sx_joint_values = {-0.175, -0.419, 1.378, 0.349, 1.535, -0.977};
     std::vector<double> scan_dx_joint_values = {0.733, -0.297, 1.378, -0.576, 1.692, 1.291};
     std::vector<double> shutdown_joint_values = {0.0, 0.175, 0.175, 0.0, 0.0, 0.0};
@@ -832,7 +832,7 @@ int main(int argc, char **argv)
     bool result = false;
     int counter = 0;
 
-    // Move to joint target
+    // // Move to joint target
     do
     {
         result = moveToJointTarget(moveit_cpp_ptr, planning_components, rest_joint_values, mid_move_config, TCP_FRAME, logger);
@@ -860,12 +860,12 @@ int main(int argc, char **argv)
         counter++;
     } while ((!result) && (counter < 16));
 
-    // Move to joint target
-    do
-    {
-        result = moveToJointTarget(moveit_cpp_ptr, planning_components, shutdown_joint_values, mid_move_config, TCP_FRAME, logger);
-        counter++;
-    } while ((!result) && (counter < 16));
+    // // Move to joint target
+    // do
+    // {
+    //     result = moveToJointTarget(moveit_cpp_ptr, planning_components, shutdown_joint_values, mid_move_config, TCP_FRAME, logger);
+    //     counter++;
+    // } while ((!result) && (counter < 16));
 
     // // Move to joint target
     // do
