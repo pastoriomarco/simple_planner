@@ -1,11 +1,8 @@
 import os
-import yaml
-from launch.actions import ExecuteProcess, OpaqueFunction, IncludeLaunchDescription, DeclareLaunchArgument
+from launch.actions import OpaqueFunction, DeclareLaunchArgument
 from ament_index_python import get_package_share_directory
 from launch import LaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
-from launch_ros.substitutions import FindPackageShare
+from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from uf_ros_lib.moveit_configs_builder import MoveItConfigsBuilder
 from uf_ros_lib.uf_robot_utils import generate_ros2_control_params_temp_file
@@ -139,12 +136,6 @@ def launch_setup(context, *args, **kwargs):
             }
         ],
     )
-
-    controllers = ['{}{}_traj_controller'.format(prefix.perform(context), xarm_type)]
-    if add_gripper.perform(context) in ('True', 'true') and robot_type.perform(context) != 'lite':
-        controllers.append('{}{}_gripper_traj_controller'.format(prefix.perform(context), robot_type.perform(context)))
-    elif add_bio_gripper.perform(context) in ('True', 'true') and robot_type.perform(context) != 'lite':
-        controllers.append('{}bio_gripper_traj_controller'.format(prefix.perform(context)))
 
     return [
         moveit_cpp_tutorial_node,
